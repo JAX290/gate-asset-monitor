@@ -1,0 +1,16 @@
+# Normalize all text files to LF in the working copy and in the repo.
+# This project deploys to Linux (systemd / Docker); CRLF breaks shell scripts.
+* text=auto eol=lf
+
+# Explicit LF for executable scripts
+*.sh text eol=lf
+
+# Windows-only files (none currently, listed for future use)
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary

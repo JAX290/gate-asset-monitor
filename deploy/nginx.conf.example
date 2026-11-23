@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# nginx reverse proxy - bind your EXISTING domain to the monitor.
+# Place at /etc/nginx/conf.d/gate-monitor.conf, then: nginx -t && systemctl reload nginx
+# Replace assets.example.com with your own domain.
+# TLS: use `certbot --nginx -d assets.example.com` (Let's Encrypt) after HTTP works.
+# ---------------------------------------------------------------------------
+server {
+    listen 80;
+    server_name assets.example.com;
+
+    # Optional extra layer: only allow your own IPs. Uncomment and edit.
+    # allow 203.0.113.10;
+    # deny all;
+
+    # Keep the app on the same origin so the auth cookie + same-origin API work.
+    location / {
+        proxy_pass         http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_read_timeout 30s;
+        proxy_buffering    off;   # smooth for CSV/JSON streaming
+    }
+
+    # Never cache private asset data
+    add_header Cache-Control "no-store" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+
+    client_max_body_size 1m;   # this app only accepts a tiny login body
+}
+
+# ---------------------------------------------------------------------------
+# After certbot, a TLS server block is added automatically. Ensure it keeps:
+#   - the same proxy_pass and headers
+#   - Cookie security: the app sets HttpOnly + SameSite=Strict (no Secure flag,
+#     so it works over the nginx-terminated HTTPS transparently).
+# ---------------------------------------------------------------------------

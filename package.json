@@ -1,0 +1,16 @@
+{
+  "name": "gate-asset-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Read-only Gate.io account asset monitor: scheduled collector, dashboard, CSV/JSON export, own-domain deployment.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node src/server.js",
+    "check": "node -e \"require('./src/config');require('./src/gateClient');require('./src/mockData');require('./src/store');require('./src/auth');console.log('modules ok')\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}

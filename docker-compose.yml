@@ -1,0 +1,36 @@
+# ---------------------------------------------------------------------------
+# Usage:
+#   cp .env.example .env   # fill ACCESS_TOKEN (and keys in live mode)
+#   docker compose up -d
+# Dashboard: http://<server-ip>:8787
+# Put nginx (or any reverse proxy) in front to bind your existing domain + TLS.
+# ---------------------------------------------------------------------------
+services:
+  gate-monitor:
+    build: .
+    image: gate-asset-monitor:1.0
+    container_name: gate-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Force loopback-friendly host inside container; real env from .env wins otherwise
+      HOST: 0.0.0.0
+      DATA_DIR: /app/data
+    ports:
+      # Bind to loopback only; nginx on the same host proxies to it.
+      # This prevents exposing the raw port directly to the internet.
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/api/auth/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

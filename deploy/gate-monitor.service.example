@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# systemd unit for the Tailscale-only deployment (generated automatically by
+# deploy/install-vps.sh -- this file is a reference copy, paths are examples).
+#
+#   sudo cp deploy/gate-monitor.service.example /etc/systemd/system/gate-asset-monitor.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gate-asset-monitor
+#   journalctl -u gate-asset-monitor -f
+#
+# The launcher resolves the node's 100.x address at boot and binds ONLY there.
+# ---------------------------------------------------------------------------
+[Unit]
+Description=Gate Asset Monitor (Tailscale only)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+Requires=tailscaled.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/gate-asset-monitor
+EnvironmentFile=/opt/gate-asset-monitor/.env
+ExecStart=/opt/gate-asset-monitor/deploy/start-tailscale.sh
+Restart=on-failure
+RestartSec=5
+
+# Hardening (moderate on purpose: the tailscale CLI must reach its socket)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/gate-asset-monitor/data
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

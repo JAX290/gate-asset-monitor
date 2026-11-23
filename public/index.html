@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#f5f6f8" />
+<link rel="icon" href="data:," />
+<title>资产监测 · Asset Monitor</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<!-- ============ LOGIN ============ -->
+<div id="login" class="login-wrap" hidden>
+  <div class="login-card">
+    <div class="login-mark"><span class="dot"></span></div>
+    <h1>资产监测</h1>
+    <p class="login-sub">请输入访问口令以查看账户数据</p>
+    <form id="loginForm">
+      <input id="tokenInput" type="password" placeholder="访问口令" autocomplete="current-password" required />
+      <button type="submit" class="btn primary full">进入看板</button>
+      <p id="loginErr" class="login-err" hidden>口令错误,请重试</p>
+    </form>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="app" class="app" hidden>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"><span class="dot"></span></div>
+      <div class="brand-txt">
+        <strong>资产监测</strong>
+        <small id="modeLabel">Asset Monitor</small>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span id="demoBadge" class="badge demo" hidden>DEMO 模拟数据</span>
+      <span id="liveBadge" class="badge live" hidden>● 实时</span>
+      <button id="refreshBtn" class="btn ghost" title="立即采集/刷新当前视图">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+        <span class="btn-label">刷新</span>
+      </button>
+      <button id="logoutBtn" class="btn icon-only" title="退出" hidden>
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <nav class="tabbar" id="tabs">
+    <button data-tab="overview" class="active">总览</button>
+    <button data-tab="analytics">资产分析</button>
+    <button data-tab="market">市场对比</button>
+    <button data-tab="operations">操作记录</button>
+    <button data-tab="report">日报</button>
+    <button data-tab="export">导出中心</button>
+  </nav>
+
+  <main class="container">
+
+    <div id="errorBar" class="error-bar" hidden></div>
+
+    <!-- ==================== VIEW: OVERVIEW ==================== -->
+    <section id="view-overview" class="view">
+      <section class="hero card">
+        <div class="hero-main">
+          <div class="hero-label">总资产估值 <span id="quoteTag" class="quote-tag">USD</span></div>
+          <div class="hero-value"><span class="cur">≈</span><span id="totalValue">—</span></div>
+          <div class="hero-sub">
+            <span id="deltaChip" class="delta-chip neutral">—</span>
+            <span class="muted">较上一次快照</span>
+          </div>
+        </div>
+        <div class="hero-meta">
+          <div class="meta-row"><span>更新时间</span><b id="updateTime">—</b></div>
+          <div class="meta-row"><span>采集间隔</span><b id="intervalLabel">—</b></div>
+          <div class="meta-row"><span>快照数量</span><b id="snapCount">—</b></div>
+          <div class="meta-row"><span>数据源</span><b id="sourceLabel">—</b></div>
+        </div>
+      </section>
+
+      <!-- v5: one-line "key info" strip. Deliberately inconspicuous: it sits
+           below the hero, not in a new tab, and never pushes the main chart. -->
+      <div id="enrichStrip" class="enrich-strip" hidden></div>
+
+      <section class="grid-2">
+        <div class="card chart-card">
+          <div class="card-head">
+            <h2>资产走势</h2>
+            <div class="range-tabs" id="rangeTabs">
+              <button data-range="50" class="active">最近</button>
+              <button data-range="150">中段</button>
+              <button data-range="500">全部</button>
+            </div>
+          </div>
+          <div id="chartWrap" class="chart-wrap">
+            <svg id="chart" viewBox="0 0 640 220" preserveAspectRatio="none" role="img" aria-label="资产走势图"></svg>
+            <div id="chartTip" class="chart-tip" hidden></div>
+          </div>
+          <div class="chart-foot">
+            <span id="chartMin" class="muted">—</span>
+            <span id="chartRange" class="muted"></span>
+            <span id="chartMax" class="muted">—</span>
+          </div>
+        </div>
+
+        <div class="card dist-card">
+          <div class="card-head"><h2>账户分布</h2></div>
+          <div id="distList" class="dist-list"></div>
+        </div>
+      </section>
+
+      <section class="card holdings-card">
+        <div class="card-head">
+          <h2>币种明细</h2>
+          <span id="holdingsNote" class="muted small"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr><th>币种</th><th class="num">数量</th><th class="num">可用</th><th class="num">冻结</th><th class="num">估值(USD)</th><th class="num">占比</th></tr>
+            </thead>
+            <tbody id="holdingsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- v5: long-tail API data lives HERE, collapsed by default. The user
+           sees key info at a glance up top; rarely-used details are one click
+           away and only fetched when the panel is actually opened. -->
+      <details id="moreData" class="more-data card">
+        <summary class="more-summary">
+          <span class="more-chev" aria-hidden="true">›</span>
+          <span class="more-title">更多数据 · 扩展行情明细</span>
+          <span class="muted small more-hint">全市场宽度 / 持仓 Ticker 全字段 / 名义费率 / 盘口深度 / 合约资金费 / 账户状态 / 充提链 · 默认收起</span>
+        </summary>
+        <div class="more-body">
+          <div class="more-toolbar">
+            <span id="enrMeta" class="muted small">点开后加载最近一次扩展采集数据</span>
+            <button id="enrRefreshBtn" class="btn ghost" type="button">刷新扩展数据</button>
+          </div>
+          <div id="enrKpis" class="enr-kpis"></div>
+          <div id="enrContent" class="enr-grid"></div>
+          <p class="muted small enr-foot">完整 34 张表（含原始 payload_json 与全部历史周期）请在「导出中心」下载；此处仅展示最近一次扩展采集的关键明细。</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ==================== VIEW: ANALYTICS ==================== -->
+    <section id="view-analytics" class="view" hidden>
+      <div id="anNotice" class="notice" hidden></div>
+
+      <div class="kpi-grid" id="kpiGrid"></div>
+
+      <div class="card chart-card">
+        <div class="card-head">
+          <h2>总资产 vs 单位净值</h2>
+          <div class="legend">
+            <span class="lg"><i class="lg-sw lg-total"></i>总资产</span>
+            <span class="lg"><i class="lg-sw lg-nav"></i>单位净值</span>
+            <span class="lg"><i class="lg-sw lg-cf"></i>现金流</span>
+          </div>
+        </div>
+        <div class="chart-wrap nav-chart-wrap">
+          <svg id="navChart" viewBox="0 0 640 240" preserveAspectRatio="none" role="img" aria-label="总资产与单位净值对比图"></svg>
+          <div id="navTip" class="chart-tip" hidden></div>
+        </div>
+        <div class="chart-foot">
+          <span id="navFootLeft" class="muted"></span>
+          <span id="navFootMid" class="muted"></span>
+          <span id="navFootRight" class="muted"></span>
+        </div>
+        <p class="chart-note">总资产与净值<b>各用一根独立的 Y 轴</b>（左侧灰线=总资产，右侧蓝线=净值），两者尺度不同，请比较<b>曲线形状是否同步起伏</b>，不要比较高度。总资产被充值/提现抬升或压低；单位净值用「期末现金流约定」剥离了外部资金进出，只反映投资表现。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>外部现金流事件</h2><span class="muted small">这些钱进/出不是收益</span></div>
+        <div id="cfList" class="cf-list"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>逐币种贡献分解</h2><span class="muted small">全窗口累计 · 单位 USD</span></div>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead>
+              <tr><th>币种</th><th class="num">价格效应</th><th class="num">数量效应</th><th class="num">交叉效应</th><th class="num">市值变动</th><th class="num">贡献占比</th></tr>
+            </thead>
+            <tbody id="attrBody"></tbody>
+          </table>
+        </div>
+        <div id="attrBars" class="attr-bars"></div>
+        <p class="chart-note">价格效应 = 币价涨跌带来的；数量效应 = 加减仓带来的（<b>不是投资收益</b>）；交叉效应 = 二者交互。<code>__RESIDUAL__</code> 为总资产变动中未被逐币种持仓覆盖的部分，保证恒等式成立。</p>
+      </div>
+
+      <div class="grid-2">
+        <div class="card info-card"><div class="card-head"><h2>基准对比</h2></div><div id="benchBox" class="info-body"></div></div>
+        <div class="card info-card"><div class="card-head"><h2>风险指标</h2></div><div id="riskBox" class="info-body"></div></div>
+        <div class="card info-card"><div class="card-head"><h2>成本与行为</h2></div><div id="costBox" class="info-body"></div></div>
+        <div class="card info-card"><div class="card-head"><h2>集中度与数据质量</h2></div><div id="qualityBox" class="info-body"></div></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>口径与约定</h2></div>
+        <div id="convBox" class="conv-box"></div>
+      </div>
+
+      <div class="card gl-card">
+        <div class="card-head">
+          <h2>指标详解 · 来源 / 口径 / 走势含义</h2>
+          <span id="glStat" class="muted small"></span>
+        </div>
+        <p class="gl-intro">上面每个指标都在这里说明：数据<b>从哪里来</b>（哪个 Gate 端点 / 哪张事实表）、<b>怎么算</b>、<b>走势或数值意味着什么</b>、以及常见误读。点击分组展开，或搜索指标名 / 字段。</p>
+        <div class="gl-tools">
+          <input id="glSearch" type="search" placeholder="搜索指标，如 TWR / 回撤 / 稳定币 / β / HHI…" />
+          <div class="gl-group-tabs" id="glGroupTabs"></div>
+        </div>
+        <div id="glList" class="gl-list"></div>
+      </div>
+    </section>
+
+    <!-- ==================== VIEW: MARKET ==================== -->
+    <section id="view-market" class="view" hidden>
+      <div id="mkNotice" class="notice" hidden></div>
+
+      <div class="card mk-hero">
+        <div class="mk-hero-head">
+          <div class="mk-hero-main">
+            <h2>这一区间，我的资产 vs 主流币</h2>
+            <p id="mkConclusion" class="mk-conclusion">—</p>
+          </div>
+          <div id="mkVerdict" class="mk-verdict">—</div>
+        </div>
+        <div id="mkReasons" class="mk-reasons"></div>
+      </div>
+
+      <div class="card mk-controls">
+        <div class="mk-ctrl-row">
+          <span class="mk-ctrl-label">区间</span>
+          <div class="range-tabs" id="mkRangeTabs">
+            <button data-preset="8H">8 小时</button>
+            <button data-preset="24H">24 小时</button>
+            <button data-preset="7D">7 天</button>
+            <button data-preset="30D">30 天</button>
+            <button data-preset="ALL" class="active">全部</button>
+          </div>
+          <span class="mk-ctrl-label">对比基准</span>
+          <div class="mk-chips" id="mkSymbolChips"></div>
+          <button id="mkRefreshBtn" class="btn ghost" title="live 模式下重新拉取公开行情">拉取行情</button>
+        </div>
+        <p id="mkWindowLabel" class="mk-window-label muted small">—</p>
+      </div>
+
+      <div class="card chart-card mk-chart-card">
+        <div class="card-head">
+          <h2>走势对比（区间起点 = 100）</h2>
+          <div class="legend" id="mkLegend"></div>
+        </div>
+        <div class="chart-wrap mk-chart-wrap">
+          <svg id="mkChart" viewBox="0 0 640 260" preserveAspectRatio="none" role="img" aria-label="资产与主流币走势对比图"></svg>
+          <div id="mkTip" class="chart-tip" hidden></div>
+        </div>
+        <div class="chart-foot">
+          <span id="mkFootLeft" class="muted"></span>
+          <span id="mkFootMid" class="muted"></span>
+          <span id="mkFootRight" class="muted"></span>
+        </div>
+        <p class="chart-note">所有序列在<b>所选区间起点归一化为 100</b>，请比较曲线形状与累计涨幅，不要比较绝对高度。资产用<b>单位净值 TWR</b>（已剥离充提），基准用 t 时刻<b>最近一根已收盘 K 线</b>（as-of 对齐，不引入未来数据）。竖线为市场事件，下方时间轴可查看当时的反应与原因。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>相对表现指标</h2><span class="muted small">对每个基准单独计算</span></div>
+        <div id="mkMetrics" class="mk-metrics"></div>
+        <p class="chart-note">β 与相关系数只在<b>基准值发生变化的有效周期</b>上回归（粗粒度 K 线的平台段不参与，避免稀释结果）。<code>excess_pct</code> 为百分点算术差；<b>β 调整后超额</b>≈剥离仓位结构后的主动选币/择时贡献。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>大环境事件与当时的影响</h2><span id="mkEventStat" class="muted small"></span></div>
+        <div id="mkEventList" class="mk-event-list"></div>
+        <p class="chart-note">事件来源为<b>人工标注 / 公开行情异动自动检测 / DEMO 模拟</b>，<b>不是实时新闻源</b>。窗口为事件前后各 N 个快照；原因分析由窗口内真实数据自动生成，仅作记录与复盘，不构成投资建议。</p>
+      </div>
+
+      <div class="grid-2">
+        <div class="card info-card">
+          <div class="card-head"><h2>按事件类型的平均反应</h2></div>
+          <div id="mkEventStudy" class="info-body"></div>
+        </div>
+        <div class="card info-card">
+          <div class="card-head"><h2>标注一个市场事件</h2><span class="muted small">append-only · 可删除重标</span></div>
+          <form id="mkEventForm" class="dec-form">
+            <div class="form-grid">
+              <label>时间（本地）<input name="ts" type="datetime-local" /></label>
+              <label>分类
+                <select name="category">
+                  <option value="macro">宏观 / 利率</option>
+                  <option value="policy">政策 / 监管</option>
+                  <option value="onchain">链上 / 资金流</option>
+                  <option value="listing">上线 / 解锁</option>
+                  <option value="security">安全事件</option>
+                  <option value="volatility">行情异动</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </label>
+              <label>影响方向
+                <select name="impact">
+                  <option value="bullish">利多</option><option value="bearish">利空</option>
+                  <option value="neutral">中性</option><option value="unknown">未知</option>
+                </select>
+              </label>
+              <label>标题<input name="title" placeholder="如：FOMC 纪要偏鹰" maxlength="120" required /></label>
+              <label>相关币种<input name="symbols" placeholder="BTC,ETH" maxlength="60" /></label>
+              <label>来源链接（可选）<input name="url" placeholder="https://" maxlength="300" /></label>
+            </div>
+            <label>摘要<textarea name="summary" rows="2" placeholder="发生了什么、为什么可能影响市场…"></textarea></label>
+            <div class="form-foot">
+              <button type="submit" class="btn primary">保存事件</button>
+              <span class="muted small">留空时间则记为当前时刻；保存后立即参与对比与原因分析</span>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== VIEW: OPERATIONS ==================== -->
+    <section id="view-operations" class="view" hidden>
+      <div class="card op-hero">
+        <h2>操作记录 · 来自 Gate 的真实操作</h2>
+        <p>这里的每一笔都是系统按只读接口从 <b>Gate</b> 同步来的真实操作（成交 / 充值 / 提现 / 划转 / 费用），<b>不是手工录入</b>——不再有「先记一笔、再去交易所操作」的时间差。你在每笔操作<b>下面</b>补充当时的<b>动机、止盈、止损、预期</b>，事后再写<b>复盘</b>；这些注释与 Gate 原始数据分开存储、append-only，可随时导出。一次成交的基础腿/计价腿/手续费已合并为一条。</p>
+        <div id="opStat" class="op-stat"></div>
+      </div>
+
+      <div class="card op-controls">
+        <div class="op-ctrl-row">
+          <span class="mk-ctrl-label">类型</span>
+          <div class="op-kind-chips" id="opKindChips"></div>
+          <label class="op-only-ann">
+            <input id="opOnlyAnn" type="checkbox" /> 只看已注释
+          </label>
+          <button id="opRefreshBtn" class="btn ghost" title="重新同步并刷新">刷新</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>操作流水</h2><span id="opListStat" class="muted small"></span></div>
+        <div id="opList" class="op-list"></div>
+      </div>
+    </section>
+
+    <!-- ==================== VIEW: REPORT ==================== -->
+    <section id="view-report" class="view" hidden>
+      <div class="card rp-hero">
+        <div class="rp-hero-head">
+          <div>
+            <h2>每日资产日报</h2>
+            <p>自动汇总<b>最近行情</b>（BTC/ETH 等主流币价与涨跌、行情异动事件）、<b>我的资产</b>（总资产 / TWR / 现金流 / 成本）、<b>资产 vs 主流币</b>对比，并给出<b>数据驱动的处置观察项</b>，通过企业微信机器人推送给你。</p>
+          </div>
+        </div>
+        <div class="rp-status" id="rpStatus"></div>
+        <div class="rp-actions">
+          <button id="rpPreviewBtn" class="btn primary">生成 / 刷新预览</button>
+          <button id="rpSendBtn" class="btn">立即推送到企业微信</button>
+          <button id="rpTestBtn" class="btn ghost">测试机器人连通性</button>
+        </div>
+        <p class="rp-note muted small">企业微信 webhook 只保存在服务端 <code>.env</code>，看板与导出里都只有脱敏信息。日报观察项基于真实数值阈值生成，<b>不构成投资建议、不含买卖指令</b>。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>日报预览</h2><span id="rpPreviewStat" class="muted small"></span></div>
+        <div id="rpPreview" class="rp-preview"><div class="dec-empty">点击「生成 / 刷新预览」查看今日日报。</div></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card info-card">
+          <div class="card-head"><h2>推送历史</h2><span id="rpHistoryStat" class="muted small"></span></div>
+          <div id="rpHistory" class="info-body"></div>
+        </div>
+        <div class="card info-card">
+          <div class="card-head"><h2>在 VPS 上启用日报</h2></div>
+          <div class="info-body conv-list">
+            <div>① 在企业微信群添加「群机器人」，复制它的 Webhook 地址。</div>
+            <div>② 只把地址写进服务端 <code>.env</code>（<b>不要发到对话里</b>）：</div>
+            <pre class="code-block">WECOM_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxx
+REPORT_ENABLED=true
+REPORT_HOUR=9          # 每天 9 点（UTC+8）
+REPORT_TZ_OFFSET_HOURS=8
+REPORT_PRESET=24H
+# WECOM_MENTION_MOBILES=13800000000   # 可选 @人
+sudo systemctl restart gate-asset-monitor</pre>
+            <div>③ 也可完全用 CLI + cron：<code>node deploy/daily-report.js --send</code>。</div>
+            <div class="muted small">未配置 webhook 时，日报仍会生成并预览 / 存档，只是不推送。</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== VIEW: EXPORT ==================== -->
+    <section id="view-export" class="view" hidden>
+      <div class="card export-hero">
+        <h2>全量数据导出</h2>
+        <p>所有原始事实（快照 / 持仓 / 账户 / 事件流水 / 行情 / 决策<b>及其原始审计链</b> / <b>主流币基准 K 线</b> / <b>宏观事件台账</b> / <b>Gate 真实操作记录 + 注释 + 注释审计链</b> / <b>每日日报历史</b>）与全部分析中间量（净值 / TWR / 归因 / 风险 / 成本 / <b>市场对比</b> / <b>事件窗口复盘</b> / <b>指标详解</b>）都以<b>整齐长表</b>导出，共 <b>25 张表</b>；ZIP 内另附 <b>8 个原始 JSONL 字节副本</b>，可独立重放哈希链、从零重建全部派生表。附<b>数据字典</b>写明每个字段的类型、单位与口径，可直接交给 Excel、pandas、Power BI 等第三方工具分析。</p>
+        <div class="export-actions">
+          <button id="bundleBtn" class="btn primary">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+            下载全量 ZIP 数据包
+          </button>
+          <button id="dictBtn" class="btn">数据字典 CSV</button>
+          <button id="schemaBtn" class="btn">字段口径 JSON</button>
+        </div>
+        <div id="integrityBox" class="integrity-box"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>数据集清单</h2><span id="dsStat" class="muted small"></span></div>
+        <div class="table-wrap">
+          <table class="tbl ds-table">
+            <thead><tr><th>数据集</th><th>粒度</th><th class="num">行数</th><th class="num">列数</th><th>导出</th></tr></thead>
+            <tbody id="dsBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card info-card">
+          <div class="card-head"><h2>在 VPS 上命令行导出</h2></div>
+          <div class="info-body">
+            <p class="muted small">不经过 HTTP、不需要口令，可直接放进 cron 做定时备份：</p>
+            <pre class="code-block">/opt/gate-asset-monitor/.runtime/node/bin/node \
+  /opt/gate-asset-monitor/deploy/export-all.js
+
+# 自定义输出目录
+DATA_DIR=/opt/gate-asset-monitor/data \
+OUT_DIR=/backup/gate \
+  node deploy/export-all.js</pre>
+          </div>
+        </div>
+        <div class="card info-card">
+          <div class="card-head"><h2>给第三方分析的约定</h2></div>
+          <div class="info-body conv-list">
+            <div>时间统一 <b>UTC</b>：<code>ts_ms</code>(Unix 毫秒) + <code>ts_iso_utc</code>(ISO 8601)</div>
+            <div>金额单位 <b>USD</b>；<code>*_pct</code> 为 0–100 百分数；ratio 类为小数</div>
+            <div>CSV 为 UTF-8 BOM + CRLF，Excel / pandas 直接可读</div>
+            <div>JSONL 每行一个对象：<code>pd.read_json(path, lines=True)</code></div>
+            <div>空值表示不可计算或缺失，<b>不代表 0</b></div>
+            <div>归因恒等式：<code>Σ delta_value_usd + __RESIDUAL__ = 总资产变动</code></div>
+            <div>比较策略表现请用 <code>nav.twr</code>，不要用含现金流的总资产涨幅</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer class="foot">
+      <span>数据来自 <b id="footSource">—</b> · 仅用于资产记录与分析,不构成投资建议</span>
+      <span id="footStatus" class="muted"></span>
+    </footer>
+  </main>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
