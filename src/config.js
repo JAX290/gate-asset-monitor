@@ -6,6 +6,7 @@
  */
 const path = require('path');
 const fs = require('fs');
+const marketCadence = require('./marketCadence');
 
 /**
  * Minimal .env loader (zero dependency). Real environment variables always win,
@@ -63,6 +64,14 @@ function intervalToSec(s) {
 
 const ROOT = path.resolve(__dirname, '..');
 
+// Benchmark candles must be at least as dense as asset snapshots, otherwise
+// the BTC/ETH curve becomes a step function and the two charts drift apart.
+const SNAPSHOT_SEC = int(process.env.SNAPSHOT_INTERVAL_SEC, 300, 30, 86400);
+const CANDLE = marketCadence.resolveCandle({
+  snapshotSec: SNAPSHOT_SEC,
+  requested: process.env.MARKET_CANDLE_INTERVAL,
+});
+
 const config = {
   root: ROOT,
   // 'mock' = deterministic simulated data (clearly labelled DEMO)
@@ -103,7 +112,7 @@ const config = {
   },
 
   collector: {
-    intervalSec: int(process.env.SNAPSHOT_INTERVAL_SEC, 300, 30, 86400), // default 5 min
+    intervalSec: SNAPSHOT_SEC, // default 5 min
     retentionDays: int(process.env.RETENTION_DAYS, 365, 1, 3650),
     // Store a price point only every N collector cycles (1 = every cycle).
     // Raise this on long-running hosts to keep prices.jsonl lean.
@@ -174,17 +183,24 @@ const config = {
   market: {
     symbols: (process.env.MARKET_SYMBOLS || 'BTC,ETH').split(',').map(s => s.trim().toUpperCase()).filter(Boolean),
     quote: (process.env.MARKET_QUOTE || 'USDT').toUpperCase(),
-    candleInterval: process.env.MARKET_CANDLE_INTERVAL || '1h',
-    candleIntervalSec: intervalToSec(process.env.MARKET_CANDLE_INTERVAL || '1h'),
-    // Gate caps candlestick history at 10000 bars back; 30d @1h = 720 bars.
-    lookbackDays: int(process.env.MARKET_LOOKBACK_DAYS, 30, 1, 330),
+    // Default = same cadence as asset snapshots (5m @ 5m snapshots). A
+    // manually requested coarser interval is clamped down by marketCadence.
+    candleInterval: CANDLE.label,
+    candleIntervalSec: CANDLE.sec,
+    candleIntervalAdjusted: CANDLE.adjusted,
+    marketSync: marketCadence.syncMeta(SNAPSHOT_SEC, CANDLE.sec),
+    // Gate caps candlestick history at 10000 bars back. 30d @5m = 8640 bars;
+    // at 1m the lookback is automatically shortened to ~6d.
+    lookbackDays: marketCadence.capLookbackDays(
+      int(process.env.MARKET_LOOKBACK_DAYS, 30, 1, 330), CANDLE.sec),
     // Pull candles on each collector cycle in live mode.
     collect: bool(process.env.MARKET_COLLECT, true),
     // Auto-detect a "major move" event when |bar return| >= this percent.
+    // Default stays at 3% even on 5m bars, so fine candles don't flood events.
     autoEvents: bool(process.env.MARKET_AUTO_EVENTS, true),
-    eventThresholdPct: (() => { const x = Number(process.env.MARKET_EVENT_THRESHOLD_PCT); return Number.isFinite(x) && x > 0 ? x : 3; })(),
-    // Half-width of an event study window, in collector intervals.
-    eventWindowBars: int(process.env.MARKET_EVENT_WINDOW_BARS, 8, 2, 48),
+    eventThresholdPct: marketCadence.eventThresholdPct(CANDLE.sec, process.env.MARKET_EVENT_THRESHOLD_PCT),
+    // Half-width of an event study window, in bars (~1h by default).
+    eventWindowBars: marketCadence.eventWindowBars(CANDLE.sec, process.env.MARKET_EVENT_WINDOW_BARS),
     // Weights for the synthetic "market index" series (renormalised over
     // whichever symbols actually have data).
     indexWeights: parseWeights(process.env.MARKET_INDEX_WEIGHTS || 'BTC:0.6,ETH:0.4'),

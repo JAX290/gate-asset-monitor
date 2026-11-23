@@ -41,6 +41,7 @@ const dailyReport = require('./dailyReport');
 const wecom = require('./wecom');
 const enrichAnalytics = require('./enrichAnalytics');
 const diskGuard = require('./diskGuard');
+const marketCadence = require('./marketCadence');
 const zip = require('./zip');
 const { writeStream } = require('./httpStream');
 const loginGuard = require('./loginGuard');
@@ -96,8 +97,27 @@ async function collectLiveFacts() {
   }
 }
 
+/** Use only the active candle cadence; keep legacy 1h rows in the raw export. */
+function marketPointsForAnalytics() {
+  return marketCadence.activeMarketPoints(facts.listMarketPoints(), config.market.candleIntervalSec);
+}
+
+/** Last ACTIVE benchmark timestamp, used for an incremental candle refresh. */
+function lastMarketTs() {
+  // Do NOT fall back to legacy 1h rows here: after a cadence change that
+  // would backfill only the last hour of 5m data instead of the full window.
+  return marketCadence.lastActiveMarketTs(facts.listMarketPoints(), config.market.candleIntervalSec);
+}
+
+/** Incremental since the last closed bar (one bar of overlap for late closes). */
+function marketRefreshOpts(forceFull) {
+  if (forceFull) return {};
+  const last = lastMarketTs();
+  return last ? { sinceMs: last - config.market.candleIntervalSec * 1000 } : {};
+}
+
 async function collectLiveMarket() {
-  const out = await gate.fetchMarketCandles();
+  const out = await gate.fetchMarketCandles(marketRefreshOpts());
   const nc = facts.addMarketPoints(out.points, 'live');
   let ne = 0;
   if (config.market.autoEvents) {
@@ -105,7 +125,7 @@ async function collectLiveMarket() {
   }
   state.lastMarketAt = Date.now();
   state.lastMarketNotes = out.notes.slice(0, 8);
-  if (nc || ne || out.notes.length) console.log(`[market] +${nc} candles +${ne} events${out.notes.length ? ' notes=' + out.notes.join(' | ') : ''}`);
+  if (nc || ne || out.notes.length) console.log(`[market] +${nc} ${config.market.candleInterval} candles +${ne} events${out.notes.length ? ' notes=' + out.notes.join(' | ') : ''}`);
   return { candles: nc, events: ne, notes: out.notes };
 }
 
@@ -322,7 +342,7 @@ function collectInput() {
       source: 'manual',
     }))),
     decisionEvents: facts.listDecisionEvents(),
-    market: facts.listMarketPoints(),
+    market: marketPointsForAnalytics(),
     macroEvents: facts.listMacroEvents(),
     macroEventLog: facts.listMacroEventLog(),
     operations: ops,
@@ -559,6 +579,9 @@ async function handleApi(req, res, url) {
         benchmark: config.analytics.benchmark,
         marketCount: facts.market.count(), macroEventCount: facts.listMacroEvents().length,
         benchmarkSymbols: config.market.symbols, marketInterval: config.market.candleInterval,
+        marketIntervalSec: config.market.candleIntervalSec,
+        marketSync: config.market.marketSync,
+        marketIntervalAdjusted: config.market.candleIntervalAdjusted,
         lastMarketAt: state.lastMarketAt, lastMarketNotes: state.lastMarketNotes,
         annotationCount: facts.listAnnotations().length,
         reportEnabled: config.report.enabled, reportConfigured: wecom.configured(config),
@@ -671,7 +694,8 @@ async function handleApi(req, res, url) {
   if (p === '/api/market/refresh' && method === 'POST') {
     if (config.mode !== 'live') return json(res, 400, { error: 'ONLY_LIVE', message: '仅 live 模式可拉取真实公开行情' });
     try {
-      const out = await gate.fetchMarketCandles();
+      // ?full=1 forces a full lookback backfill (used once after a cadence change).
+      const out = await gate.fetchMarketCandles(marketRefreshOpts(url.searchParams.get('full') === '1'));
       const n = facts.addMarketPoints(out.points, 'live');
       const ev = config.market.autoEvents
         ? facts.addMacroEvents(facts.detectAutoMarketEvents(out.points, config.market.eventThresholdPct, out.intervalSec)) : 0;
@@ -1042,7 +1066,7 @@ function banner() {
     `  disk guard  : ${config.disk.enabled ? `${config.disk.minFreeMb}MB soft / ${config.disk.hardFreeMb}MB hard · never truncate` : 'OFF'}`,
     `  retention   : ${config.collector.retentionDays}d`,
     `  benchmark   : ${config.analytics.benchmark}   riskFree=${config.analytics.riskFreeRate}`,
-    `  market      : ${config.market.symbols.join('/')} @${config.market.candleInterval} (public, no key) | auto-events ${config.market.autoEvents ? 'on' : 'off'}`,
+    `  market      : ${config.market.symbols.join('/')} @${config.market.candleInterval} (public, no key) | sync ${config.market.marketSync.aligned ? 'OK' : 'COARSER'} (${config.market.marketSync.snapshotsPerCandle} snapshot(s)/bar) | auto-events ${config.market.autoEvents ? 'on' : 'off'}`,
     `  data files  : snapshots / events / prices / decisions / market / macro_events / annotations / reports / enrichment .jsonl (9 raw, 8 hash chains)`,
     `  export      : /api/export/all (ZIP, 34 tables + dictionary + 9 raw JSONL)`,
     `  enrichment  : ${config.enrich.collect ? 'ON' : 'OFF'} every ${enrichEvery()} collector cycles | detail<=${config.enrich.maxDetail} | books<=${config.enrich.maxBookPairs} | contracts ${config.enrich.futuresContracts.join('/')} | /api/enrichment`,
@@ -1055,6 +1079,10 @@ function banner() {
     '  -------------------------------------------',
   ];
   if (config.mode === 'live' && !(config.gate.key && config.gate.secret)) lines.push('  [WARN] live mode needs GATE_API_KEY / GATE_API_SECRET');
+  if (config.market.candleIntervalAdjusted) {
+    lines.push(`  [WARN] MARKET_CANDLE_INTERVAL 比资产快照更粗，已自动下调到 ${config.market.candleInterval} 以保持走势图同步。`);
+    lines.push('         如需更长历史窗口，请调大 MARKET_LOOKBACK_DAYS 而不是放宽 K 线周期。');
+  }
   if (config.report.enabled && !wecom.configured(config)) {
     lines.push('  [WARN] 日报调度已开但企业微信 webhook 未配置：日报会生成并入历史，但不会推送。');
     lines.push('         在 .env 设置 WECOM_WEBHOOK_URL 或 WECOM_WEBHOOK_KEY 后重启即可推送。');

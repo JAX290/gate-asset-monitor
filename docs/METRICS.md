@@ -233,7 +233,7 @@ TWR = Π(1 + r_i) − 1 = nav_per_unit(末) − 1
 | `tracking_error_pct` | `stdev(r_nav − r_bench) × 100`，每期百分点，**未年化** |
 | `sample_periods` | 有效配对周期数 |
 
-**平台段处理（关键口径）**：当 K 线比快照粗（如 1h K 线 vs 5min 快照），基准在相邻快照间是阶梯状常数。若逐点回归，大量零收益样本会稀释 β 与相关性。因此相对指标**只在「基准值发生变化」的区间上取样**：从上一次基准变化点 `last` 到当前 `i`，`r_bench = bench[i]/bench[last]−1`、`r_nav = nav[i]/nav[last]−1`，每个样本恰为一个完整 K 线周期。图表仍展示完整快照轴。
+**平台段处理（关键口径）**：当前默认 K 线已与资产快照同频（5m@5m），基准不再是长阶梯。但当使用历史遗留的粗 K 线或人为设置更细的 K 线时，基准在相邻快照间仍可能是阶梯状常数。若逐点回归，大量零收益样本会稀释 β 与相关性。因此相对指标**只在「基准值发生变化」的区间上取样**：从上一次基准变化点 `last` 到当前 `i`，`r_bench = bench[i]/bench[last]−1`、`r_nav = nav[i]/nav[last]−1`。图表仍展示完整快照轴。
 
 ### 10.4 事件窗口与原因分析
 
@@ -314,6 +314,15 @@ BTC 的 `beta=1, idio=0`，因此 `market.jsonl` 的 BTC `close` 与持仓估值
 - **静态资源**：`ETag = sha256(文件内容).hex 前 24 位`，内容变则 ETag 变；`If-None-Match` 命中返回 `304`，无 body。`Accept-Encoding: gzip` 时预压缩并缓存（`mtime + size` 作为失效键），返回 `Content-Encoding: gzip` + `Vary: Accept-Encoding`。因文件名不含内容哈希，缓存策略为 `no-cache`（每次重新校验），**不是 `immutable`**；`nosniff` / `X-Frame-Options` / `Referrer-Policy` 安全头在所有响应上保留。
 - **流式 ZIP**：`/api/export/all` 用 `zip.stream()` generator 逐块 `res.write()`，`drain` 事件处理背压，`close` 事件处理客户端断开。字节内容与离线 CLI 的 `zip.build()` **逐字节相同**（同一套 header 构造函数，固定时间戳可复现）；响应带 `X-Export-Tables: 34` 便于脚本核对。内存峰值由「整包 + 拷贝」降为「单条最大记录」。
 - **CSP 口径**：`script-src 'self'`（无 `unsafe-inline` / `unsafe-eval` / 外部源），`style-src 'self' 'unsafe-inline'` 仅因 `app.js` 用 `innerHTML` 写宽度/颜色条——样式属性不执行脚本。`connect-src 'self'` 保证 API 同源；`base-uri 'none'` / `frame-ancestors 'none'` / `object-src 'none'` 收紧注入面。登录限流按 `req.socket.remoteAddress` 计数，完全不读 `X-Forwarded-For`。
+
+### 11.7 基准行情采样同步（v5.2）
+
+- **问题**：资产快照每 `SNAPSHOT_INTERVAL_SEC`（默认 300s）一条，而 BTC/ETH 基准 K 线原为 1h。走势对比时基准是 12 点阶梯，两条曲线在时间轴上"看着不同步"，β/相关性也只在基准换棒时才有样本。
+- **策略**（`src/marketCadence.js`）：默认选择与快照同频的 Gate 支持周期（5m@5m）。若显式配置比快照更粗（如 `MARKET_CANDLE_INTERVAL=1h` + 300s 快照），自动下调到 5m；若配置更细则保留。异常配置在启动 banner 与 `/api/summary.status.marketSync` 中如实显示 `aligned=false`。
+- **增量采集 + 翻页**：首次按 `MARKET_LOOKBACK_DAYS` 全量回填；此后只从上一条**同周期**已落盘 K 线往前重叠 1 根拉取，修正迟到收盘价，避免每 5 分钟重拉 30 天数据。Gate 规定**单次请求范围最多 1000 根且两端都计数**（恰好 1000 根会报 `INVALID_PARAM_VALUE`），因此回填按 **990 根**窗口向前翻页（30 天 5m ≈ 9 页）。切换周期时不会拿旧 1h 当游标（那只会补最后一小时）；如需手动重跑全窗口，调用 `POST /api/market/refresh?full=1`。Gate 总历史上限 10000 根，1m 周期时回看窗口自动缩到 6 天。
+- **哈希链兼容**：K 线 id 从 `candle-{SYMBOL}-{ts}` 改为 `candle-{SYMBOL}-{intervalSec}-{ts}`。切换周期后，同一时间戳的旧 1h 与新 5m 可共存于 append-only 的 `market.jsonl`；分析入口按当前 `intervalSec` 过滤，**只把同频数据喂给图表**，旧数据仍随 ZIP 的 `raw/market.jsonl` 原样导出供第三方复核。
+- **事件阈值保持不变**：5m K 线仍使用 3% 阈值（5 分钟内 3% 已是显著波动，不会刷屏），事件窗口默认约 1 小时（5m=12 根）。显式配置始终优先。
+- **磁盘口径**：`market.jsonl` 只存 `MARKET_SYMBOLS` 指定的主流币，30 天 5m×2 币约 0.1–0.2MB/天；全市场 2160 对 tickers 仍走低频 `prices.jsonl` + `PRICE_SAMPLE_EVERY`，不受本次改动影响。
 
 ---
 

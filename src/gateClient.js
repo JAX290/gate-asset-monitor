@@ -19,6 +19,7 @@
  */
 const crypto = require('crypto');
 const config = require('./config');
+const marketCadence = require('./marketCadence');
 
 function sha512Hex(buf) {
   return crypto.createHash('sha512').update(buf || '').digest('hex');
@@ -492,7 +493,10 @@ function parseCandle(arr, symbol, quote, intervalSec) {
   const tsSec = Number(arr[0]), close = num(arr[2]);
   if (!Number.isFinite(tsSec) || tsSec <= 0 || !(close > 0)) return null;
   return {
-    id: `candle-${symbol}-${tsSec}`,
+    // Include the interval: after a cadence change the same timestamp can
+    // legitimately exist as both an old 1h bar and a new 5m bar. Analytics
+    // selects the active interval via marketCadence.activeMarketPoints().
+    id: `candle-${symbol}-${intervalSec}-${tsSec}`,
     ts: tsSec * 1000, symbol, quote,
     open: num(arr[5]), high: num(arr[3]), low: num(arr[4]), close,
     baseVolume: num(arr[6]), quoteVolume: num(arr[1]),
@@ -515,32 +519,44 @@ async function fetchMarketCandles(opts = {}) {
   const lookbackDays = opts.lookbackDays || cfg.lookbackDays;
   const quote = cfg.quote;
   const notes = [], points = [];
-  const toSec = Math.floor(Date.now() / 1000);
-  const fromSec = toSec - lookbackDays * 86400;
+  const toSec = opts.toMs ? Math.floor(Number(opts.toMs) / 1000) : Math.floor(Date.now() / 1000);
+  // Incremental refresh after the first backfill: re-pull one extra bar of
+  // overlap so a late-arriving close still corrects the previous point.
+  const lookbackFromSec = toSec - lookbackDays * 86400;
+  const sinceSec = opts.sinceMs ? Math.floor(Number(opts.sinceMs) / 1000) : null;
+  const fromSec = Number.isFinite(sinceSec) && sinceSec > 0
+    ? Math.max(lookbackFromSec, Math.min(toSec, sinceSec - intervalSec))
+    : lookbackFromSec;
   const maxBars = Math.min(10000, Math.ceil(lookbackDays * 86400 / intervalSec) + 5);
 
   for (const symbol of symbols) {
     let collected = 0, cursorTo = toSec, pages = 0;
     while (collected < maxBars && pages < 12) {
-      const limit = Math.min(1000, maxBars - collected);
+      // Gate counts both range endpoints: exactly 1000 bars is rejected.
+      // 990 leaves headroom; candlePageWindow caps the window too.
+      const limit = Math.min(marketCadence.CANDLE_PAGE_BARS, maxBars - collected);
+      // Page backwards in <=limit-bar windows instead of a fixed 30d `from`.
+      const win = marketCadence.candlePageWindow(fromSec, cursorTo, intervalSec, limit);
+      if (win.from >= win.to) break;
       let rows;
       try {
         rows = await publicGet('/spot/candlesticks', {
-          currency_pair: `${symbol}_${quote}`, interval, from: fromSec, to: cursorTo, limit,
+          currency_pair: `${symbol}_${quote}`, interval, from: win.from, to: win.to, limit,
         });
       } catch (err) { notes.push(`${symbol}/${interval}: ${err.message}`); break; }
       if (!Array.isArray(rows) || !rows.length) break;
-      let oldest = Infinity;
+      let oldestSec = win.from;
       for (const arr of rows) {
+        const tsSec = Number(arr && arr[0]);
+        if (Number.isFinite(tsSec) && tsSec < oldestSec) oldestSec = tsSec;
         const p = parseCandle(arr, symbol, quote, intervalSec);
         if (!p || !p.windowClosed) continue;      // skip unfinished bar
         points.push(p);
-        if (p.ts < oldest) oldest = p.ts;
       }
       collected += rows.length;
       pages++;
       if (rows.length < limit) break;
-      const nextTo = Math.floor(oldest / 1000) - 1;
+      const nextTo = oldestSec - 1;
       if (!Number.isFinite(nextTo) || nextTo <= fromSec || nextTo >= cursorTo) break;
       cursorTo = nextTo;
     }

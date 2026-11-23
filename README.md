@@ -341,12 +341,12 @@ sudo systemctl restart gate-asset-monitor    # Tailscale 部署
 | `ANALYTICS_LIMIT` | `0` | 送入分析窗口的快照数(0=全部,上限 200000) |
 | `MARKET_SYMBOLS` | `BTC,ETH` | 对比的主流币（Gate 公开 K 线，无需密钥） |
 | `MARKET_QUOTE` | `USDT` | 组成 `{SYMBOL}_{QUOTE}` 交易对 |
-| `MARKET_CANDLE_INTERVAL` | `1h` | K 线周期 |
-| `MARKET_LOOKBACK_DAYS` | `30` | 回溯天数（Gate 上限 10000 根） |
-| `MARKET_COLLECT` | `true` | live 模式拉取公开 K 线 |
+| `MARKET_CANDLE_INTERVAL` | 跟随 `SNAPSHOT_INTERVAL_SEC`（5m） | K 线周期；显式设得更粗会被自动下调得更细，确保基准不比资产快照稀疏 |
+| `MARKET_LOOKBACK_DAYS` | `30` | 回溯天数；细周期自动缩短以守住 Gate 10000 根上限（1m≈6 天） |
+| `MARKET_COLLECT` | `true` | live 模式每轮**增量**拉取公开 K 线（重叠 1 根防漏/纠错） |
 | `MARKET_AUTO_EVENTS` | `true` | 从行情大幅波动自动生成异动事件 |
-| `MARKET_EVENT_THRESHOLD_PCT` | `3` | 单根 K 线涨跌幅超该值(%)记为事件 |
-| `MARKET_EVENT_WINDOW_BARS` | `8` | 事件窗口前后各 N 个快照 |
+| `MARKET_EVENT_THRESHOLD_PCT` | `3` | 单根 K 线涨跌幅超该值(%)记为事件；5m 下仍保持 3%，避免事件刷屏 |
+| `MARKET_EVENT_WINDOW_BARS` | 约 1 小时（5m=12） | 事件窗口前后各 N 根 K 线 |
 | `MARKET_INDEX_WEIGHTS` | `BTC:0.6,ETH:0.4` | 合成市场指数权重 |
 | `ACCESS_TOKEN` | 空 | 看板访问口令(**必填**) |
 | `SESSION_TTL_SEC` | `604800` | 登录会话有效期 |
@@ -425,6 +425,7 @@ CLI 产出:34 张表的 `.csv` + `.jsonl`、`analytics.json`、`manifest.json`�
 
 - **`prices.jsonl` 是主要增长源**:`/spot/tickers` 每次返回约 **2160 个交易对**,5 分钟采集周期下 `PRICE_SAMPLE_EVERY=1` 约 **162MB/天**。生产环境设 `PRICE_SAMPLE_EVERY=12`(每小时一次)后约 **13.5MB/天**;快照、净值、三段归因、市场对比都不依赖 `prices` 链密度,不受影响。
 - **`prices.jsonl` 属于哈希链事实层,历史不能截断或删除**(否则 `/api/integrity` 报错、ZIP 的 `raw/` 字节副本缺失);该配置只控制**未来**写入频率。`RETENTION_DAYS` 只清理 `snapshots.jsonl`,对其余链无效。
+- **`market.jsonl`（BTC/ETH 基准 K 线）与 `prices.jsonl` 是两条独立的链**：全市场 2160 对 tickers 仍按 `PRICE_SAMPLE_EVERY` 低频落盘，但走势图用的基准行情默认 **与资产快照同频（5m@5m）**，只抓 `MARKET_SYMBOLS` 指定的主流币。每轮只做**增量拉取**（重叠 1 根 K 线修正迟到的收盘价），30 天 5m×2 币约 **0.1–0.2MB/天**，不受磁盘水位保护影响也不会撑爆磁盘。切换周期后旧的 1h K 线仍保留在 `raw/market.jsonl`，但图表/分析只喂当前周期的 K 线（按 `intervalSec` 过滤），避免新旧混算。
 - **顶部红色「数据源提示」横幅**来自 `/api/summary.status.lastError`,即本轮采集的 `notes`。最常见的一条是
   `futures/btc/accounts: Gate API 400: USER_NOT_FOUND` —— 含义是 **Gate Key 未开通 BTC 本位合约账户**(或该 Key 无合约读取权限),**不是网页故障**,也不影响现货、USDT 合约、理财、充提、成交与总资产(总额来自 `/wallet/total_balance`)。把 `GATE_SETTLES` 设为**实际已开通**的结算币(如 `usdt`)即可让该提示消失;以后开通 BTC 合约再加回来。
 - **`enrichment.jsonl`（v5）**：低频，跟随 `PRICE_SAMPLE_EVERY`（默认每小时一条），约 3–8KB/条 ≈ **0.1–0.2MB/天**，可忽略。只存**聚合结果 + 我实际持仓的 ticker 明细**，不存 2160 行原始 tickers（子端点原始响应截断后放 `payload_json` 供第三方重放）。想更省可调 `ENRICH_SAMPLE_EVERY` 或 `ENRICH_COLLECT=false`。
