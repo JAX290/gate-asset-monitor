@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node src/server.js",
+    "test": "node --test",
     "check": "node -e \"require('./src/config');require('./src/gateClient');require('./src/mockData');require('./src/store');require('./src/auth');console.log('modules ok')\""
   },
   "engines": {

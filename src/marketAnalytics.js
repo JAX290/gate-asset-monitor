@@ -70,10 +70,11 @@ function asOf(symbol, axis, marketPts, pricePts) {
   let j = -1;
   for (const a of axis) {
     while (j + 1 < clean.length && clean[j + 1].ts <= a.ts) j++;
-    // j === -1 means the first bar is still in the future for this point:
-    // use the earliest available price (documented as an aligned start), but
-    // callers trim the axis to commonStart so this rarely happens.
-    values.push(j >= 0 ? clean[j].v : clean[0].v);
+    // j === -1 means every bar is still in the future for this timestamp.
+    // Return null instead of borrowing clean[0]: silently using a later price
+    // is look-ahead bias, and it is exactly what makes "beat the market"
+    // numbers look better than they were. compute() trims such points away.
+    values.push(j >= 0 ? clean[j].v : null);
   }
   return { values, firstTs: clean[0].ts, lastTs: clean[clean.length - 1].ts, source, points: clean.length };
 }
@@ -250,6 +251,12 @@ function compute(input, analysis, opts = {}) {
       axis = trimmed;
       for (const s of symbols) raw[s] = raw[s].slice(cut);
     }
+  }
+
+  // If the window still starts before any benchmark exists, aligning it would
+  // mean inventing a price. Refuse rather than produce a fake comparison.
+  for (const s of symbols) {
+    if (raw[s][0] === null || raw[s][0] === undefined) return empty('所选区间起点早于可用基准行情');
   }
 
   const nav = axis.map(v => Number(v.navPerUnit) || 0);

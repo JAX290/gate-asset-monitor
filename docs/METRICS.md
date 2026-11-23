@@ -307,6 +307,14 @@ BTC 的 `beta=1, idio=0`，因此 `market.jsonl` 的 BTC `close` 与持仓估值
 - **充提链**：从 `events.note` 解析「链上充值 · ETH」等链名，解析不到归 `UNKNOWN`（表示未标注，不等于没有链）；金额取现金流绝对额。
 - **DEMO 自洽性**：`buildDemoEnrichment` 的宽度、ticker 明细、合约资金费、盘口、资金占用都由同一 `priceUsd()/marketFactor()` 过程派生，与资产曲线、市场对比、事件窗口讲同一个故事。
 
+### 11.6 v5.1 传输与容量口径
+
+- **磁盘水位策略**（`src/diskGuard.js`）：`freeMb = statfs.bavail × bsize ÷ 1048576`，用 `bavail`（普通用户可用块）而非 `bfree`。软水位 `minFreeMb=512` 以下按 `2^ceil(log2(minFree/free))` 加倍采样间隔，硬水位 `hardFreeMb=128` 以下 `skipHeavy=true`（停写 `prices` 与 `enrichment`，快照与哈希链其它事件继续）。采样倍数夹在 `[1, maxSampleEvery=100]`，与基础 `PRICE_SAMPLE_EVERY` 相乘后再夹一次。文件系统不可查时 **fail open**（保持原设置），绝不误停采集。
+- **事实层不可截断**：水位保护只改变**未来写入频率**，不删除、不重写、不压缩历史 `.jsonl`；截断会破坏 `prevHash` 链，使 `/api/integrity` 失败。要长期留存应做**分段归档 + 尾哈希锚点**，而不是删除。
+- **静态资源**：`ETag = sha256(文件内容).hex 前 24 位`，内容变则 ETag 变；`If-None-Match` 命中返回 `304`，无 body。`Accept-Encoding: gzip` 时预压缩并缓存（`mtime + size` 作为失效键），返回 `Content-Encoding: gzip` + `Vary: Accept-Encoding`。因文件名不含内容哈希，缓存策略为 `no-cache`（每次重新校验），**不是 `immutable`**；`nosniff` / `X-Frame-Options` / `Referrer-Policy` 安全头在所有响应上保留。
+- **流式 ZIP**：`/api/export/all` 用 `zip.stream()` generator 逐块 `res.write()`，`drain` 事件处理背压，`close` 事件处理客户端断开。字节内容与离线 CLI 的 `zip.build()` **逐字节相同**（同一套 header 构造函数，固定时间戳可复现）；响应带 `X-Export-Tables: 34` 便于脚本核对。内存峰值由「整包 + 拷贝」降为「单条最大记录」。
+- **CSP 口径**：`script-src 'self'`（无 `unsafe-inline` / `unsafe-eval` / 外部源），`style-src 'self' 'unsafe-inline'` 仅因 `app.js` 用 `innerHTML` 写宽度/颜色条——样式属性不执行脚本。`connect-src 'self'` 保证 API 同源；`base-uri 'none'` / `frame-ancestors 'none'` / `object-src 'none'` 收紧注入面。登录限流按 `req.socket.remoteAddress` 计数，完全不读 `X-Forwarded-For`。
+
 ---
 
 ## 12. 免责

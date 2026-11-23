@@ -8,6 +8,10 @@
  *
  * Implements: local file headers, central directory, EOCD, CRC-32, UTF-8
  * filename flag (0x0800). No encryption, no zip64 (fine for our data sizes).
+ *
+ * `build()` materialises the whole archive (used by tests and the offline CLI).
+ * `stream()` yields one buffer at a time for HTTP downloads, so peak memory
+ * stays at the size of the largest single entry instead of 2x the bundle.
  */
 
 let CRC_TABLE = null;
@@ -32,70 +36,111 @@ function dosDateTime(d) {
   return { time: time & 0xFFFF, date: date & 0xFFFF };
 }
 
+function normalise(e) {
+  return {
+    name: Buffer.from(e.name, 'utf8'),
+    data: Buffer.isBuffer(e.data) ? e.data : Buffer.from(String(e.data), 'utf8'),
+  };
+}
+
+function localHeader(time, date, crc, size, nameLen) {
+  const b = Buffer.alloc(30);
+  b.writeUInt32LE(0x04034b50, 0);   // local file header signature
+  b.writeUInt16LE(20, 4);           // version needed
+  b.writeUInt16LE(0x0800, 6);       // flags: UTF-8 filenames
+  b.writeUInt16LE(0, 8);            // method: STORE
+  b.writeUInt16LE(time, 10);
+  b.writeUInt16LE(date, 12);
+  b.writeUInt32LE(crc, 14);
+  b.writeUInt32LE(size, 18);        // compressed size
+  b.writeUInt32LE(size, 22);        // uncompressed size
+  b.writeUInt16LE(nameLen, 26);
+  b.writeUInt16LE(0, 28);           // extra length
+  return b;
+}
+
+function centralHeader(time, date, crc, size, nameLen, offset) {
+  const b = Buffer.alloc(46);
+  b.writeUInt32LE(0x02014b50, 0);   // central dir signature
+  b.writeUInt16LE(20, 4);           // version made by
+  b.writeUInt16LE(20, 6);           // version needed
+  b.writeUInt16LE(0x0800, 8);       // flags
+  b.writeUInt16LE(0, 10);           // method
+  b.writeUInt16LE(time, 12);
+  b.writeUInt16LE(date, 14);
+  b.writeUInt32LE(crc, 16);
+  b.writeUInt32LE(size, 20);
+  b.writeUInt32LE(size, 24);
+  b.writeUInt16LE(nameLen, 28);
+  b.writeUInt16LE(0, 30);           // extra length
+  b.writeUInt16LE(0, 32);           // comment length
+  b.writeUInt16LE(0, 34);           // disk number
+  b.writeUInt16LE(0, 36);           // internal attrs
+  b.writeUInt32LE(0, 38);           // external attrs
+  b.writeUInt32LE(offset, 42);      // relative offset of local header
+  return b;
+}
+
+function eocd(count, centralLen, offset) {
+  const b = Buffer.alloc(22);
+  b.writeUInt32LE(0x06054b50, 0);
+  b.writeUInt16LE(0, 4);            // disk number
+  b.writeUInt16LE(0, 6);            // disk with central dir
+  b.writeUInt16LE(count, 8);
+  b.writeUInt16LE(count, 10);
+  b.writeUInt32LE(centralLen, 12);
+  b.writeUInt32LE(offset, 16);      // central dir offset
+  b.writeUInt16LE(0, 20);           // comment length
+  return b;
+}
+
 /**
  * @param {Array<{name:string, data:Buffer|string}>} entries
- * @returns {Buffer} zip archive
+ * @param {Date} [now] injectable for byte-for-byte tests
+ * @returns {Buffer} complete zip archive
  */
-function build(entries) {
-  const { time, date } = dosDateTime(new Date());
+function build(entries, now = new Date()) {
+  const { time, date } = dosDateTime(now);
   const locals = [];
   const centrals = [];
   let offset = 0;
 
   for (const e of entries) {
-    const name = Buffer.from(e.name, 'utf8');
-    const data = Buffer.isBuffer(e.data) ? e.data : Buffer.from(String(e.data), 'utf8');
+    const { name, data } = normalise(e);
     const crc = crc32(data);
-
-    const local = Buffer.alloc(30);
-    local.writeUInt32LE(0x04034b50, 0);   // local file header signature
-    local.writeUInt16LE(20, 4);           // version needed
-    local.writeUInt16LE(0x0800, 6);       // flags: UTF-8 filenames
-    local.writeUInt16LE(0, 8);            // method: STORE
-    local.writeUInt16LE(time, 10);
-    local.writeUInt16LE(date, 12);
-    local.writeUInt32LE(crc, 14);
-    local.writeUInt32LE(data.length, 18); // compressed size
-    local.writeUInt32LE(data.length, 22); // uncompressed size
-    local.writeUInt16LE(name.length, 26);
-    local.writeUInt16LE(0, 28);           // extra length
-    locals.push(local, name, data);
-
-    const central = Buffer.alloc(46);
-    central.writeUInt32LE(0x02014b50, 0); // central dir signature
-    central.writeUInt16LE(20, 4);         // version made by
-    central.writeUInt16LE(20, 6);         // version needed
-    central.writeUInt16LE(0x0800, 8);     // flags
-    central.writeUInt16LE(0, 10);         // method
-    central.writeUInt16LE(time, 12);
-    central.writeUInt16LE(date, 14);
-    central.writeUInt32LE(crc, 16);
-    central.writeUInt32LE(data.length, 20);
-    central.writeUInt32LE(data.length, 24);
-    central.writeUInt16LE(name.length, 28);
-    central.writeUInt16LE(0, 30);         // extra length
-    central.writeUInt16LE(0, 32);         // comment length
-    central.writeUInt16LE(0, 34);         // disk number
-    central.writeUInt16LE(0, 36);         // internal attrs
-    central.writeUInt32LE(0, 38);         // external attrs
-    central.writeUInt32LE(offset, 42);    // relative offset of local header
-    centrals.push(central, name);
-
+    locals.push(localHeader(time, date, crc, data.length, name.length), name, data);
+    centrals.push(centralHeader(time, date, crc, data.length, name.length, offset), name);
     offset += 30 + name.length + data.length;
   }
 
   const centralBuf = Buffer.concat(centrals);
-  const eocd = Buffer.alloc(22);
-  eocd.writeUInt32LE(0x06054b50, 0);
-  eocd.writeUInt16LE(0, 4);              // disk number
-  eocd.writeUInt16LE(0, 6);              // disk with central dir
-  eocd.writeUInt16LE(entries.length, 8);
-  eocd.writeUInt16LE(entries.length, 10);
-  eocd.writeUInt32LE(centralBuf.length, 12);
-  eocd.writeUInt32LE(offset, 16);        // central dir offset
-  eocd.writeUInt16LE(0, 20);             // comment length
-
-  return Buffer.concat([...locals, centralBuf, eocd]);
+  return Buffer.concat([...locals, centralBuf, eocd(entries.length, centralBuf.length, offset)]);
 }
 
-module.exports = { build, crc32 };
+/**
+ * Generator form: identical bytes to build(), but yields each header / entry
+ * separately. Intended for `res.write()` with backpressure handling.
+ * @param {Array<{name:string, data:Buffer|string}>} entries
+ * @param {Date} [now]
+ */
+function* stream(entries, now = new Date()) {
+  const { time, date } = dosDateTime(now);
+  const centrals = [];
+  let offset = 0;
+
+  for (const e of entries) {
+    const { name, data } = normalise(e);
+    const crc = crc32(data);
+    yield localHeader(time, date, crc, data.length, name.length);
+    yield name;
+    yield data;
+    centrals.push(centralHeader(time, date, crc, data.length, name.length, offset), name);
+    offset += 30 + name.length + data.length;
+  }
+
+  const centralBuf = Buffer.concat(centrals);
+  yield centralBuf;
+  yield eocd(entries.length, centralBuf.length, offset);
+}
+
+module.exports = { build, stream, crc32 };

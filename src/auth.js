@@ -88,13 +88,17 @@ function checkLogin(token) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+function cookieFlags() {
+  return `HttpOnly; SameSite=Strict${config.auth.secureCookie ? '; Secure' : ''}; Path=/`;
+}
+
 function sessionCookie() {
   const maxAge = config.auth.sessionTtlSec;
-  return `${COOKIE}=${createSession()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`;
+  return `${COOKIE}=${createSession()}; ${cookieFlags()}; Max-Age=${maxAge}`;
 }
 
 function clearCookie() {
-  return `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`;
+  return `${COOKIE}=; ${cookieFlags()}; Max-Age=0`;
 }
 
 function isAuthed(req) {

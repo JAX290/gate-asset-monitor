@@ -171,7 +171,9 @@ npm start
 | 网络层 | `HOST` 在启动时被设为 `tailscale ip -4`(形如 `100.x.y.z`),服务只监听该地址 | 公网 IP、eth0、docker 网桥上 **8787 端口根本不存在**,连接直接 `refused` |
 | 应用层 | `TAILSCALE_ONLY=true`,任何来源 IP 不在 `100.64.0.0/10` / `fd7a:115c:a1e0::/48` / 回环内的请求,**路由之前**返回 403 | 即使将来误把服务绑到 `0.0.0.0`,非组网设备依然进不来 |
 
-两层之外还有第三道锁:`ACCESS_TOKEN` 登录。网段白名单默认**不信任** `X-Forwarded-For`(可伪造),只认真实 socket 对端地址。
+两层之外还有第三道锁:`ACCESS_TOKEN` 登录 + per-IP 失败限流(5 次 / 5 分钟,超出返回 `429` + `Retry-After`),两者都只认真实 socket 对端,**不信任** `X-Forwarded-For`(可伪造)。所有响应带严格 CSP:`script-src 'self'`,无内联 JS、无外部源、无 `eval`;`style-src` 保留 `unsafe-inline`,因为看板用 `innerHTML` 生成宽度/颜色条(仅样式,不执行脚本)。`COOKIE_SECURE` 仅在 HTTPS 反代下开启。`/api/health` 是**唯一免登录**的路由,只返回 `ok`/`uptimeSec`/`ts`,不含任何账户数据,且仍在 Tailscale 来源过滤之后,可供 systemd/监控做存活检查。
+
+> 会话签名密钥由 `ACCESS_TOKEN` + 每次启动随机 salt 派生,所以**服务重启后所有设备都需要重新登录**;这是有意的,单实例部署不需要额外的撤销落盘。登出只撤销当前 `sid`,不影响其它终端。
 
 > 与同机现有 Caddy 配置里 `@notTailscale not remote_ip 100.64.0.0/10` 用的是同一个网段,口径一致。
 
@@ -327,6 +329,10 @@ sudo systemctl restart gate-asset-monitor    # Tailscale 部署
 | `SNAPSHOT_INTERVAL_SEC` | `300` | 采集间隔(秒) |
 | `RETENTION_DAYS` | `365` | 历史保留天数 |
 | `PRICE_SAMPLE_EVERY` | `1` | 每 N 个采集周期存一次价格点(1–100) |
+| `DISK_GUARD_ENABLED` | `true` | 低磁盘时自动降采样/停写重数据（不删哈希链） |
+| `DISK_GUARD_MIN_FREE_MB` | `512` | 软水位：低于此值采样间隔加倍 |
+| `DISK_GUARD_HARD_FREE_MB` | `128` | 硬水位：低于此值停写 prices / enrichment |
+| `DISK_GUARD_MAX_SAMPLE_EVERY` | `100` | 自动降采样的倍数上限 |
 | `EVENT_LOOKBACK_DAYS` | `90` | live 首次回溯流水窗口(1–730 天) |
 | `COLLECT_EVENTS` | `true` | live 模式每轮拉取流水与行情 |
 | `GATE_TRADE_PAIRS` | 空 | live 模式额外抓 `/spot/my_trades` 的交易对(逗号分隔,如 `BTC_USDT,ETH_USDT`) |
@@ -344,6 +350,10 @@ sudo systemctl restart gate-asset-monitor    # Tailscale 部署
 | `MARKET_INDEX_WEIGHTS` | `BTC:0.6,ETH:0.4` | 合成市场指数权重 |
 | `ACCESS_TOKEN` | 空 | 看板访问口令(**必填**) |
 | `SESSION_TTL_SEC` | `604800` | 登录会话有效期 |
+| `COOKIE_SECURE` | `false` | 仅 HTTPS 反代下设为 `true`（纯 HTTP 下会导致无法登录） |
+| `LOGIN_MAX_ATTEMPTS` | `5` | 同一来源 IP 的登录失败上限，超出 429 |
+| `LOGIN_WINDOW_SEC` | `300` | 失败计数的滑动窗口（秒） |
+| `LOGIN_LOCK_SEC` | `300` | 触发上限后的锁定时长（秒） |
 | `QUOTE_LABEL` | `USD` | 界面计价标签(仅显示用) |
 | `DATA_DIR` | `./data` | 9 个 append-only `.jsonl` 文件目录 |
 | `ENV_FILE` | 自动 | 指定要加载的 `.env` 路径 |
@@ -359,6 +369,7 @@ sudo systemctl restart gate-asset-monitor    # Tailscale 部署
 | `/api/auth/status` | GET | 登录状态 |
 | `/api/auth/login` | POST | `{token}` → 设置会话 Cookie |
 | `/api/auth/logout` | POST | 撤销当前设备会话 |
+| `/api/health` | GET | **免登录**存活探针（仅 `ok` / `uptimeSec` / `ts`，无账户数据） |
 | `/api/summary` | GET | 最新快照 + 涨跌 + 系统状态(含 `tailscaleOnly`) |
 | `/api/history?limit=` | GET | 历史序列 |
 | `/api/refresh` | POST | 立即采集一次 |
@@ -395,7 +406,7 @@ sudo systemctl restart gate-asset-monitor    # Tailscale 部署
 
 ## 9. 数据备份与维护
 
-- 数据都在 `data/` 下 8 个 **append-only 纯文本** `.jsonl`:`snapshots.jsonl` / `events.jsonl` / `prices.jsonl` / `decisions.jsonl` / `market.jsonl` / `macro_events.jsonl` / **`annotations.jsonl`** / **`reports.jsonl`**,直接复制即备份,其中 7 条链(`events/prices/decisions/market/macro_events/annotations/reports`)带 SHA-256 哈希链可校验完整性;`snapshots.jsonl` 仍作为原始文件随 ZIP 导出。
+- 数据都在 `data/` 下 9 个 **append-only 纯文本** `.jsonl`:`snapshots.jsonl` / `events.jsonl` / `prices.jsonl` / `decisions.jsonl` / `market.jsonl` / `macro_events.jsonl` / `annotations.jsonl` / `reports.jsonl` / **`enrichment.jsonl`**,直接复制即备份,其中 8 条链(`events/prices/decisions/market/macro_events/annotations/reports/enrichment`)带 SHA-256 哈希链可校验完整性;`snapshots.jsonl` 仍作为原始文件随 ZIP 导出。
 - Tailscale 部署的数据在 `/opt/gate-asset-monitor/data/`,服务重启、重装代码都不会丢(增量部署刻意不覆盖 `.env` / `data/` / `.runtime/`)。
 - 看板「导出中心」一键下载全量 ZIP;或用离线 CLI 定时备份(不经过 HTTP、不需要口令):
 
@@ -417,6 +428,8 @@ CLI 产出:34 张表的 `.csv` + `.jsonl`、`analytics.json`、`manifest.json`�
 - **顶部红色「数据源提示」横幅**来自 `/api/summary.status.lastError`,即本轮采集的 `notes`。最常见的一条是
   `futures/btc/accounts: Gate API 400: USER_NOT_FOUND` —— 含义是 **Gate Key 未开通 BTC 本位合约账户**(或该 Key 无合约读取权限),**不是网页故障**,也不影响现货、USDT 合约、理财、充提、成交与总资产(总额来自 `/wallet/total_balance`)。把 `GATE_SETTLES` 设为**实际已开通**的结算币(如 `usdt`)即可让该提示消失;以后开通 BTC 合约再加回来。
 - **`enrichment.jsonl`（v5）**：低频，跟随 `PRICE_SAMPLE_EVERY`（默认每小时一条），约 3–8KB/条 ≈ **0.1–0.2MB/天**，可忽略。只存**聚合结果 + 我实际持仓的 ticker 明细**，不存 2160 行原始 tickers（子端点原始响应截断后放 `payload_json` 供第三方重放）。想更省可调 `ENRICH_SAMPLE_EVERY` 或 `ENRICH_COLLECT=false`。
+- **磁盘水位保护（v5.1）**：剩余空间低于 `DISK_GUARD_MIN_FREE_MB`（默认 512MB）时自动把价格/扩展数据的采样间隔翻倍（最低 512→×2、256→×4、128→×8，上限 `DISK_GUARD_MAX_SAMPLE_EVERY`）；低于 `DISK_GUARD_HARD_FREE_MB`（默认 128MB）时**完全停止写 prices / enrichment，但快照继续**。宁可少采，也**不截断或删除哈希链**。状态见 `/api/summary` 的 `status.diskGuard`（`level` / `freeMb` / `sampleEvery` / `skipHeavy`），日志只在级别变化时打一次。`DISK_GUARD_ENABLED=false` 可关闭。
+- **传输优化（v5.1）**：前端 `index.html` / `app.js` / `style.css` 走 gzip（实测 82KB → 26KB）+ ETag 条件请求（未变更返回 `304`），安全头保持不变；文件名没有内容哈希，所以用 `no-cache` 重新校验而不是 `immutable`，避免改版后拿旧页面。`/api/export/all` 改为**流式 ZIP**（逐块写入并处理背压），内存峰值从「整包 ×2」降为「单张最大表」，ZIP 内容与离线 CLI 逐字节一致（80 条目 / 34 表 / 9 raw）。
 - 任何 `.env` 改动后必须 `systemctl restart gate-asset-monitor` 才生效(配置只在进程启动时读取)。
 
 ---
@@ -442,6 +455,9 @@ gate-asset-monitor/
 │   ├── exporter.js      # 34 张整齐长表 + 数据字典 + manifest + ZIP bundle
 │   ├── zip.js           # 零依赖 ZIP writer(STORE / CRC32 / UTF-8 文件名)
 │   ├── auth.js          # Token 登录 + HMAC 会话 + 按设备撤销
+│   ├── diskGuard.js     # 磁盘水位策略(软/硬水位 → 降采样/停写重数据,不删链)
+│   ├── httpStream.js    # 流式 ZIP 写入(背压 + 断连保护)
+│   ├── loginGuard.js    # 登录失败限流(per-IP 滑动窗口,不信任代理头)
 │   └── server.js        # HTTP 服务 / 定时采集 / 全部 API / 分析缓存 / 日报调度 / 安全 gate
 ├── public/              # 看板六视图(零 CDN 依赖:index.html / style.css / app.js)
 ├── deploy/
@@ -453,11 +469,25 @@ gate-asset-monitor/
 │   ├── gate-monitor.service.example
 │   ├── verify-live.sh            # 真实密钥预检
 │   └── nginx.conf.example
+├── test/                # node:test 单测套件(79 条断言,零依赖)
+│   ├── netguard.test.js         # 网段白名单边界 / 代理头信任 / fail-closed
+│   ├── facts.test.js            # 哈希链串联 + 篡改/删除/重排检测
+│   ├── diskGuard.test.js        # 水位策略 / 采样夹逼 / fail-open
+│   ├── httpStream.test.js       # 流式写入 / 背压 / 断连（空 ZIP 回归）
+│   ├── loginGuard.test.js       # 滑动窗口 / 按 IP 隔离 / 成功后清零
+│   ├── analytics.test.js        # 现金流剥离 / NAV / 归因残差闭合 / 回撤
+│   ├── marketAnalytics.test.js  # as-of 对齐无前视 / 归一化 / 相对指标
+│   ├── operations.test.js       # refId 折叠 / 注释挂载 / 筛选
+│   ├── enrichAnalytics.test.js  # 扩展表 / 相对强弱 / 费率对账 / 充提链
+│   └── exporter.test.js         # 34 表 schema / CSV 转义 / ZIP 80 条目
 ├── docs/
 │   └── METRICS.md       # 指标口径真相源(公式/单位/时间基准/空值语义)
+├── .github/workflows/ci.yml # Node 18/20/22 矩阵:语法 + 单测 + 导出冒烟
 ├── data/                # 9 个 append-only .jsonl(git 忽略)
 ├── .runtime/            # VPS 私有 Node 运行时(git 忽略,安装时生成)
-├── .env.example
+├── .env.example / .nvmrc / .editorconfig
+├── LICENSE / CHANGELOG.md
+├── package.json
 ├── Dockerfile / docker-compose.yml
 └── README.md
 ```
@@ -536,7 +566,23 @@ v4 之前只用了 `GET /spot/tickers` 返回的 `last` 和 `currency_pair`,另�
 
 ---
 
-## 12. 免责与口径说明
+## 12. 开发与测试
+
+```bash
+npm test          # node:test,79 条断言,无需 npm install
+npm run check     # 关键模块加载冒烟测试
+node --check src/server.js   # 单文件语法检查
+```
+
+- **测试全部用临时 `DATA_DIR` 隔离**,不会碰 `.env`、`data/` 或生产数据;测试身份也由环境变量注入。
+- CI 在 push / PR 到 `main` 时跑 Node 18 / 20 / 22 三个版本:全量语法检查 → 79 条单测 → 离线导出 CLI 冒烟(校验 ZIP 可解压、34 张表、manifest 一致)。
+- 关键不变量被测试钉死:**现金流不能算成收益**、**归因残差必须闭合**、**as-of 不能用未来数据**、**哈希链篡改必被发现**、**导出 34 表且字典与 schema 一致**。改公式前先跑测试。
+- 本地开发建议 `mock` 模式 + 独立 `DATA_DIR`;没有 Gate 密钥也能跑通全部视图、日报预览和导出。
+- 版本演进见 [`CHANGELOG.md`](CHANGELOG.md);指标口径以 [`docs/METRICS.md`](docs/METRICS.md) 为准。
+
+---
+
+## 13. 免责与口径说明
 
 - 本工具**只做资产查看、分析与导出,不提供任何投资建议、买卖判断或仓位建议**;日报中的「资产处置观察」是基于真实数值阈值的复核提示,不是交易信号。企业微信机器人 webhook 与 Gate 密钥同属服务端机密,不下发前端、不进日志与导出。
 - `mock` 模式全部为确定性模拟数据并显著标注 `DEMO`,不代表真实资产或真实行情。

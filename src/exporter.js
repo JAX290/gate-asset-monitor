@@ -1035,7 +1035,11 @@ function readmeText(T, analysis, integrity) {
 /**
  * Build the full ZIP. Returns { buffer, filename, manifest }.
  */
-function buildBundle(input) {
+/**
+ * Assemble the ZIP entries without materialising the archive. The HTTP route
+ * streams these into the response; the offline CLI uses buildBundle() below.
+ */
+function buildBundleEntries(input) {
   const T = buildTables(input);
   const analysis = input.analysis || {};
   const integrity = input.integrity || {};
@@ -1063,8 +1067,12 @@ function buildBundle(input) {
   entries.push({ name: `${prefix}/analytics.json`, data: JSON.stringify(analysis, null, 2) });
   entries.push({ name: `${prefix}/manifest.json`, data: JSON.stringify(manifest, null, 2) });
   entries.push({ name: `${prefix}/README.txt`, data: readmeText(T, analysis, integrity) });
-  const buffer = zip.build(entries);
-  return { buffer, filename: `${prefix}.zip`, manifest, tables: T };
+  return { entries, manifest, tables: T, prefix };
+}
+
+function buildBundle(input) {
+  const { entries, manifest, tables, prefix } = buildBundleEntries(input);
+  return { buffer: zip.build(entries), filename: `${prefix}.zip`, manifest, tables };
 }
 
 function datasetCatalog(T) {
@@ -1076,6 +1084,6 @@ function datasetCatalog(T) {
 }
 
 module.exports = {
-  SCHEMA, DATASET_ORDER, buildTables, serialise, buildBundle, datasetCatalog,
+  SCHEMA, DATASET_ORDER, buildTables, serialise, buildBundleEntries, buildBundle, datasetCatalog,
   toCsv, toJsonl, toJson, iso,
 };

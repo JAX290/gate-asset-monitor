@@ -23,6 +23,8 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
+const crypto = require('crypto');
 const config = require('./config');
 const gate = require('./gateClient');
 const mock = require('./mockData');
@@ -38,6 +40,10 @@ const metricGlossary = require('./metricGlossary');
 const dailyReport = require('./dailyReport');
 const wecom = require('./wecom');
 const enrichAnalytics = require('./enrichAnalytics');
+const diskGuard = require('./diskGuard');
+const zip = require('./zip');
+const { writeStream } = require('./httpStream');
+const loginGuard = require('./loginGuard');
 
 const guard = netguard.buildGuard(config.security);
 
@@ -65,9 +71,12 @@ const state = {
   lastMarketAt: null, lastMarketNotes: [],
   lastReportAt: null, lastReportOk: null, lastReportMessage: null,
   lastEnrichAt: null, lastEnrichNotes: [],
+  disk: null, diskLevelLogged: null,
   running: false,
   startedAt: Date.now(),
 };
+// Per-socket-peer login failures. Never keyed by X-Forwarded-For.
+const loginAttempts = new Map();
 
 /* ------------------------------- collector ------------------------------- */
 
@@ -78,7 +87,8 @@ async function collectLiveFacts() {
     : Date.now() - config.analytics.eventLookbackDays * 86400 * 1000;
   const out = await gate.fetchLiveFacts(since);
   const ne = facts.addEvents(out.events, 'live');
-  const np = (priceTick % config.collector.priceSampleEvery === 0) ? facts.addPrices(out.prices, 'live') : 0;
+  const every = (state.disk && state.disk.sampleEvery) || config.collector.priceSampleEvery;
+  const np = (priceTick % every === 0) ? facts.addPrices(out.prices, 'live') : 0;
   state.lastFactsAt = Date.now();
   state.lastFactsNotes = out.notes.slice(0, 8);
   if (ne || np || out.notes.length) {
@@ -134,6 +144,14 @@ async function collectOnce() {
   if (state.running) return;
   state.running = true;
   priceTick++;
+  // Refresh before any fact write. A level change is logged once, not every
+  // cycle, so a full disk does not flood the journal.
+  state.disk = diskGuard.inspect(config.storage.dir, config.disk, config.collector.priceSampleEvery);
+  if (state.disk.level !== state.diskLevelLogged) {
+    state.diskLevelLogged = state.disk.level;
+    if (state.disk.level === 'ok') console.log(`[disk] watermark back to healthy (${state.disk.freeMb}MB free)`);
+    else console.warn(`[disk] ${state.disk.level.toUpperCase()}: ${state.disk.reason} · price/enrich every ${state.disk.sampleEvery} cycles${state.disk.skipHeavy ? ' · heavy writes SUSPENDED (snapshots continue)' : ''}`);
+  }
   try {
     let data;
     if (config.mode === 'live') {
@@ -157,7 +175,7 @@ async function collectOnce() {
         // Candles are coarse (default 1h); no need to re-pull every 5 min.
         const minGap = Math.max(60, Math.floor(config.market.candleIntervalSec / 2)) * 1000;
         if (config.market.collect && Date.now() - (state.lastMarketAt || 0) >= minGap) await collectLiveMarket();
-      } else if (config.mode === 'mock' && priceTick % config.collector.priceSampleEvery === 0) {
+      } else if (config.mode === 'mock' && !state.disk.skipHeavy && priceTick % state.disk.sampleEvery === 0) {
         facts.addPrices(mock.buildDemoPrices([Date.now()]), 'mock');
       }
     } catch (err) {
@@ -168,7 +186,8 @@ async function collectOnce() {
     // Extended read-only enrichment: low-frequency, and FULLY isolated. A
     // failing optional endpoint must never reach state.lastError (the top red
     // bar) nor abort the snapshot. Follows PRICE_SAMPLE_EVERY to bound disk.
-    if (config.enrich.collect && priceTick % enrichEvery() === 0) {
+    const enrichEveryEffective = Math.max(enrichEvery(), state.disk.sampleEvery);
+    if (config.enrich.collect && !state.disk.skipHeavy && priceTick % enrichEveryEffective === 0) {
       try {
         if (config.mode === 'live') await collectLiveEnrichment(data);
         else if (config.mode === 'mock') {
@@ -444,6 +463,10 @@ function send(res, status, body, headers = {}) {
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'no-referrer',
+    // Scripts stay strict. `style-src` needs unsafe-inline because app.js
+    // builds width/colour bars via innerHTML style attributes; no inline JS,
+    // no external origins, no eval anywhere in the front-end.
+    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
     ...headers,
   });
   res.end(body);
@@ -478,12 +501,34 @@ async function handleApi(req, res, url) {
   const method = req.method;
 
   // --- auth endpoints (no session required) ---
+  // Liveness probe for systemd / monitors. Deliberately BEFORE the auth gate,
+  // but still behind the Tailscale source filter. Carries no account data.
+  if (p === '/api/health' && method === 'GET') {
+    return json(res, 200, { ok: true, uptimeSec: Math.floor((Date.now() - state.startedAt) / 1000), ts: Date.now() });
+  }
+
   if (p === '/api/auth/status' && method === 'GET') {
     return json(res, 200, { enabled: config.auth.enabled, authed: auth.isAuthed(req) });
   }
   if (p === '/api/auth/login' && method === 'POST') {
+    const peer = req.socket.remoteAddress || 'unknown';   // never X-Forwarded-For
+    const limiter = {
+      maxAttempts: config.auth.maxLoginAttempts,
+      windowSec: config.auth.loginWindowSec,
+      lockSec: config.auth.loginLockSec,
+    };
+    const verdict = loginGuard.check(loginAttempts, peer, Date.now(), limiter);
+    if (!verdict.allowed) {
+      return json(res, 429, {
+        ok: false, error: '尝试次数过多，请稍后再试', retryAfterSec: verdict.retryAfterSec,
+      }, { 'Retry-After': String(verdict.retryAfterSec) });
+    }
     const body = await readBody(req);
-    if (!auth.checkLogin(body.token)) return json(res, 401, { ok: false, error: '访问口令错误' });
+    if (!auth.checkLogin(body.token)) {
+      loginGuard.record(loginAttempts, peer, false, Date.now(), limiter);
+      return json(res, 401, { ok: false, error: '访问口令错误' });
+    }
+    loginGuard.record(loginAttempts, peer, true, Date.now(), limiter);
     return json(res, 200, { ok: true }, { 'Set-Cookie': auth.sessionCookie() });
   }
   if (p === '/api/auth/logout' && method === 'POST') {
@@ -521,6 +566,7 @@ async function handleApi(req, res, url) {
         reportCount: facts.listReports().length,
         enrichEnabled: config.enrich.collect, enrichCount: facts.enrichment.count(),
         lastEnrichAt: state.lastEnrichAt, lastEnrichNotes: state.lastEnrichNotes,
+        diskGuard: state.disk, diskGuardConfig: config.disk,
       },
     });
   }
@@ -705,8 +751,20 @@ async function handleApi(req, res, url) {
   }
   if (p === '/api/export/all' && method === 'GET') {
     const { input, analysis } = getAnalysis();
-    const bundle = exporter.buildBundle({ ...input, analysis, rawFiles: facts.rawFiles() });
-    return download(res, bundle.buffer, bundle.filename, MIME['.zip']);
+    const { entries, manifest, prefix } = exporter.buildBundleEntries({
+      ...input, analysis, rawFiles: facts.rawFiles(),
+    });
+    // Streamed: peak memory is the largest single table, not 2x the ZIP.
+    res.writeHead(200, {
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Frame-Options': 'DENY',
+      'Referrer-Policy': 'no-referrer',
+      'Content-Type': MIME['.zip'],
+      'Content-Disposition': `attachment; filename="${prefix}.zip"`,
+      'X-Export-Tables': String(manifest.datasets.length),
+    });
+    return writeStream(res, zip.stream(entries));
   }
 
   // Legacy export endpoint — kept for compatibility with older dashboards.
@@ -901,23 +959,56 @@ function round(v, d = 2) { const p = Math.pow(10, d); return Math.round(v * p) /
 
 /* ----------------------------- static server ----------------------------- */
 
-function serveStatic(res, pathname) {
+function serveStatic(res, pathname, req) {
   let rel = pathname === '/' ? '/index.html' : pathname;
   let decoded;
   try { decoded = decodeURIComponent(rel); } catch (_) { return send404(res); }
   const file = safeJoin(PUBLIC_DIR, decoded);
   const isFile = file && fs.existsSync(file) && fs.statSync(file).isFile();
-  if (isFile) return serveFile(res, file);
+  if (isFile) return serveFile(res, file, req);
   if (path.extname(decoded)) return send404(res);
   const idx = path.join(PUBLIC_DIR, 'index.html');
-  if (fs.existsSync(idx)) return serveFile(res, idx);
+  if (fs.existsSync(idx)) return serveFile(res, idx, req);
   return send404(res);
 }
 function send404(res) { return send(res, 404, 'Not found', { 'Content-Type': 'text/plain; charset=utf-8' }); }
-function serveFile(res, file) {
+
+// Static assets are small but re-downloaded on every cold start. gzip + ETag
+// cuts ~80% of the bytes and turns unchanged reloads into a 304. Filenames
+// have no content hash, so use `no-cache` (revalidate), NOT immutable.
+const GZIP_EXT = new Set(['.html', '.js', '.css', '.svg', '.ico', '.json', '.txt']);
+const assetCache = new Map();
+function cachedAsset(file) {
+  const st = fs.statSync(file);
+  const hit = assetCache.get(file);
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit;
+  const raw = fs.readFileSync(file);
+  const asset = {
+    mtimeMs: st.mtimeMs, size: st.size, raw,
+    etag: '"' + crypto.createHash('sha256').update(raw).digest('hex').slice(0, 24) + '"',
+    gz: GZIP_EXT.has(path.extname(file).toLowerCase()) ? zlib.gzipSync(raw, { level: 6 }) : null,
+  };
+  assetCache.set(file, asset);
+  return asset;
+}
+function serveFile(res, file, req) {
   const ext = path.extname(file).toLowerCase();
-  const body = fs.readFileSync(file);
-  send(res, 200, body, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+  let asset;
+  try { asset = cachedAsset(file); } catch (_) { return send404(res); }
+  const headers = {
+    'Content-Type': MIME[ext] || 'application/octet-stream',
+    'ETag': asset.etag,
+    'Cache-Control': 'no-cache',             // override send()'s no-store
+  };
+  if (req && req.headers['if-none-match'] === asset.etag) return send(res, 304, '', headers);
+  let body = asset.raw;
+  if (asset.gz && req && /\bgzip\b/i.test(req.headers['accept-encoding'] || '')) {
+    body = asset.gz;
+    headers['Content-Encoding'] = 'gzip';
+    headers['Vary'] = 'Accept-Encoding';
+  }
+  headers['Content-Length'] = body.length;
+  return send(res, 200, req && req.method === 'HEAD' ? '' : body, headers);
 }
 
 const server = http.createServer((req, res) => {
@@ -935,7 +1026,7 @@ const server = http.createServer((req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     return send(res, 405, 'Method Not Allowed', { 'Content-Type': 'text/plain' });
   }
-  serveStatic(res, url.pathname);
+  serveStatic(res, url.pathname, req);
 });
 
 /* --------------------------------- boot ---------------------------------- */
@@ -948,6 +1039,7 @@ function banner() {
     `  listen      : http://${config.server.host}:${config.server.port}`,
     `  access      : ${config.security.tailscaleOnly ? 'TAILSCALE ONLY (' + guard.rules.length + ' allow rules)' : 'unrestricted (no source-IP filter)'}`,
     `  interval    : ${config.collector.intervalSec}s`,
+    `  disk guard  : ${config.disk.enabled ? `${config.disk.minFreeMb}MB soft / ${config.disk.hardFreeMb}MB hard · never truncate` : 'OFF'}`,
     `  retention   : ${config.collector.retentionDays}d`,
     `  benchmark   : ${config.analytics.benchmark}   riskFree=${config.analytics.riskFreeRate}`,
     `  market      : ${config.market.symbols.join('/')} @${config.market.candleInterval} (public, no key) | auto-events ${config.market.autoEvents ? 'on' : 'off'}`,

@@ -230,12 +230,30 @@ const config = {
     dir: process.env.DATA_DIR || path.join(ROOT, 'data'),
   },
 
+  // Disk watermark guard (v5.1): fact files are append-only, so we never
+  // truncate them. Instead we raise the heavy-data sampling interval below
+  // the soft watermark and stop writing prices/enrichment below the hard one.
+  // Snapshots always continue. Unknown free space fails open.
+  disk: {
+    enabled: bool(process.env.DISK_GUARD_ENABLED, true),
+    minFreeMb: int(process.env.DISK_GUARD_MIN_FREE_MB, 512, 32, 100000),
+    hardFreeMb: int(process.env.DISK_GUARD_HARD_FREE_MB, 128, 16, 100000),
+    maxSampleEvery: int(process.env.DISK_GUARD_MAX_SAMPLE_EVERY, 100, 1, 1000),
+  },
+
   auth: {
     // Access token protecting the dashboard. If unset, auth is DISABLED and a
     // loud warning is printed at boot. Strongly recommended to set behind a domain.
     token: process.env.ACCESS_TOKEN || '',
     enabled: bool(process.env.AUTH_ENABLED, undefined) && !!process.env.ACCESS_TOKEN,
     sessionTtlSec: int(process.env.SESSION_TTL_SEC, 86400 * 7, 3600, 86400 * 30),
+    // Set true only when the dashboard is served over HTTPS (e.g. behind a
+    // Tailscale HTTPS proxy). The default HTTP-only deployment must stay false.
+    secureCookie: bool(process.env.COOKIE_SECURE, false),
+    // Per-socket-peer login limiter. X-Forwarded-For is never consulted.
+    maxLoginAttempts: int(process.env.LOGIN_MAX_ATTEMPTS, 5, 1, 100),
+    loginWindowSec: int(process.env.LOGIN_WINDOW_SEC, 300, 10, 86400),
+    loginLockSec: int(process.env.LOGIN_LOCK_SEC, 300, 10, 86400),
   },
 
   // Optional display currency label for the dashboard (purely cosmetic).
