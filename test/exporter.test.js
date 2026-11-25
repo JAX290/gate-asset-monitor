@@ -1,6 +1,6 @@
 'use strict';
 /**
- * exporter: 34 tidy tables + dictionary + manifest + ZIP bundle.
+ * exporter: 35 tidy tables + dictionary + manifest + ZIP bundle.
  *
  * The export is the contract with third-party tools (Excel / pandas / Power BI).
  * A silently dropped table, a schema drift, or a bad CSV quote breaks analysis
@@ -30,8 +30,8 @@ const V5_TABLES = ['enrichment', 'ticker_detail', 'market_breadth', 'fee_schedul
 const RAW_FILES = ['snapshots', 'events', 'prices', 'decisions', 'market',
   'macro_events', 'annotations', 'reports', 'enrichment'];
 
-test('SCHEMA 与 DATASET_ORDER 完全一致，共 34 张表', () => {
-  assert.equal(DATASET_ORDER.length, 34);
+test('SCHEMA 与 DATASET_ORDER 完全一致，共 35 张表', () => {
+  assert.equal(DATASET_ORDER.length, 35);
   const keys = Object.keys(SCHEMA).sort();
   assert.deepEqual([...DATASET_ORDER].sort(), keys, '清单与 schema 不得漂移');
   assert.equal(new Set(DATASET_ORDER).size, DATASET_ORDER.length, '不得有重复表名');
@@ -56,9 +56,9 @@ test('v5 的 9 张扩展表全部在导出清单中', () => {
   }
 });
 
-test('buildTables：空输入也产出全部 34 张表，列与 schema 对齐', () => {
+test('buildTables：空输入也产出全部 35 张表，列与 schema 对齐', () => {
   const T = exporter.buildTables({});
-  assert.equal(Object.keys(T).length, 34);
+  assert.equal(Object.keys(T).length, 35);
   for (const name of DATASET_ORDER) {
     const t = T[name];
     assert.ok(t, `${name} 缺失`);
@@ -79,7 +79,7 @@ test('dictionary 是唯一真相源：行数 = 所有表的列数之和', () => 
 test('datasetCatalog 报告的行列数与表内容一致', () => {
   const T = exporter.buildTables({ enrichment: [{ ts: 1, source: 'live' }] });
   const cat = exporter.datasetCatalog(T);
-  assert.equal(cat.length, 34);
+  assert.equal(cat.length, 35);
   for (const c of cat) {
     assert.equal(c.rows, T[c.name].rows.length);
     assert.equal(c.columns, T[c.name].columns.length);
@@ -136,7 +136,7 @@ test('zip.stream：逐块产出与 build() 字节完全一致（流式下载不�
   assert.ok(streamed.equals(expected), '流式输出必须与一次性构建逐字节相同');
 });
 
-test('buildBundle：80 条目、34 CSV + 34 JSONL + 9 raw + 3 辅助文件', () => {
+test('buildBundle：82 条目、35 CSV + 35 JSONL + 9 raw + 3 辅助文件', () => {
   const rawFiles = RAW_FILES.map(name => ({
     name: `${name}.jsonl`, data: Buffer.from(`[${name}]\n`),
   }));
@@ -157,10 +157,10 @@ test('buildBundle：80 条目、34 CSV + 34 JSONL + 9 raw + 3 辅助文件', () 
     if (raw.readUInt32LE(i) === 0x02014b50) n++;
   }
   const expected = DATASET_ORDER.length * 2 + rawFiles.length + 3;
-  assert.equal(expected, 80);
+  assert.equal(expected, 82);
   assert.equal(n, expected, `ZIP 应有 ${expected} 个条目，实际 ${n}`);
 
-  assert.equal(b.manifest.datasets.length, 34);
+  assert.equal(b.manifest.datasets.length, 35);
   assert.deepEqual(b.manifest.raw_files, rawFiles.map(r => r.name));
   assert.equal(b.manifest.integrity.ok, true);
   assert.match(b.filename, /^gate-assets-.*\.zip$/);

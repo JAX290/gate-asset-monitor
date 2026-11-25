@@ -38,6 +38,11 @@
     <div class="top-actions">
       <span id="demoBadge" class="badge demo" hidden>DEMO 模拟数据</span>
       <span id="liveBadge" class="badge live" hidden>● 实时</span>
+      <span id="fxLabel" class="fx-label" title="USD/CNY 参考汇率（公开数据源，仅供界面换算）">汇率 —</span>
+      <div class="unit-switch" id="unitSwitch" role="group" aria-label="显示单位">
+        <button type="button" data-unit="USD" class="on">USD</button>
+        <button type="button" data-unit="CNY">CNY</button>
+      </div>
       <button id="refreshBtn" class="btn ghost" title="立即采集/刷新当前视图">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
         <span class="btn-label">刷新</span>
@@ -238,17 +243,31 @@
         <div class="mk-ctrl-row">
           <span class="mk-ctrl-label">区间</span>
           <div class="range-tabs" id="mkRangeTabs">
-            <button data-preset="8H">8 小时</button>
-            <button data-preset="24H">24 小时</button>
+            <button data-preset="24H" class="active">24 小时</button>
             <button data-preset="7D">7 天</button>
             <button data-preset="30D">30 天</button>
-            <button data-preset="ALL" class="active">全部</button>
+            <button data-preset="180D">180 天</button>
+            <button data-preset="ALL">全部</button>
           </div>
           <span class="mk-ctrl-label">对比基准</span>
           <div class="mk-chips" id="mkSymbolChips"></div>
           <button id="mkRefreshBtn" class="btn ghost" title="live 模式下重新拉取公开行情">拉取行情</button>
         </div>
+        <form class="mk-ctrl-row mk-custom" id="mkCustomForm">
+          <span class="mk-ctrl-label">自定义（UTC 0 点）</span>
+          <input type="date" id="mkFromDate" aria-label="起始日期（UTC）" />
+          <span class="mk-ctrl-label">至</span>
+          <input type="date" id="mkToDate" aria-label="结束日期（UTC）" />
+          <button type="submit" class="btn ghost">应用</button>
+          <button type="button" id="mkCustomClear" class="btn ghost">清除</button>
+          <span id="mkCustomHint" class="muted small">起止日均按 UTC 当天 00:00 → 23:59:59.999 计算</span>
+        </form>
         <p id="mkWindowLabel" class="mk-window-label muted small">—</p>
+      </div>
+
+      <div class="card mk-price-card">
+        <div class="card-head"><h2>最新价格参考</h2><span class="muted small">按当前汇率换算；涨跌幅与相对指标不受换算影响</span></div>
+        <div id="mkPrices" class="mk-prices"></div>
       </div>
 
       <div class="card chart-card mk-chart-card">

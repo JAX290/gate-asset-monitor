@@ -10,7 +10,10 @@ const state = {
   tab: 'overview',
   analytics: null, datasets: null, integrity: null,
   navChartPts: [],
-  market: null, mkPreset: 'ALL', mkSymbols: null, mkAllSymbols: null,
+  market: null, mkPreset: '24H', mkSymbols: null, mkAllSymbols: null,
+  mkFromDate: '', mkToDate: '',
+  // display unit (USD/CNY) + server-side reference rate; fact layer stays USD
+  unit: (localStorage.getItem('gam.unit') === 'CNY' ? 'CNY' : 'USD'), fx: null,
   // metric glossary
   glossary: null, glGroup: 'all', glQuery: '',
   // operations
@@ -44,6 +47,49 @@ function fmtSigned(v, d = 2) {
 }
 function pctClass(v) { return v === null || v === undefined || Number.isNaN(Number(v)) ? '' : (Number(v) > 0 ? 'up' : Number(v) < 0 ? 'down' : ''); }
 function cls(v) { return pctClass(v); }
+
+/* ---- display units: USD <-> CNY, server-side reference rate only ---- */
+function fxRate() { return state.unit === 'CNY' && state.fx && Number(state.fx.rate) > 0 ? Number(state.fx.rate) : 1; }
+function effectiveUnit() { return state.unit === 'CNY' && fxRate() !== 1 ? 'CNY' : 'USD'; }
+function unitSymbol() { return effectiveUnit() === 'CNY' ? '¥' : '$'; }
+function unitTag() { return effectiveUnit(); }
+function toUnit(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n * fxRate() : null;
+}
+function fmtUsd(v, d = 2) { const n = toUnit(v); return n === null ? '—' : unitSymbol() + fmtMoney(n, d); }
+function fmtSignedUsd(v, d = 2) {
+  const n = toUnit(v);
+  return n === null ? '—' : (n > 0 ? '+' : '') + unitSymbol() + fmtMoney(n, d);
+}
+function renderFxLabel() {
+  const el = $('#fxLabel'); if (!el) return;
+  const f = state.fx || {};
+  const ok = Number(f.rate) > 0;
+  el.textContent = ok ? `${f.rateLabel}${f.stale ? ' · 缓存' : ''}` : '汇率 —';
+  el.title = ok
+    ? `USD/CNY 参考汇率 · 来源 ${f.provider || '—'} · 报价时间 ${f.sourceTimeIso || '—'} · 抓取 ${f.fetchedIso || '—'}${f.stale ? '（缓存值）' : ''}。仅用于界面单位换算，事实层与分析指标始终为 USD。`
+    : '参考汇率暂不可用，金额按 USD 显示；公开数据源恢复后自动更新。';
+}
+async function loadFx(force = false) {
+  try {
+    state.fx = await api('/api/fx' + (force ? '?refresh=1' : ''));
+    renderFxLabel();
+    if (state.tab === 'market' && state.market) renderMkPrices(state.market);
+  } catch (_) { /* keep last known rate */ }
+}
+$('#unitSwitch').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-unit]');
+  if (!b) return;
+  const u = b.dataset.unit;
+  if (state.unit === u) return;
+  state.unit = u;
+  try { localStorage.setItem('gam.unit', u); } catch (_) {}
+  $$('#unitSwitch button').forEach(x => x.classList.toggle('on', x.dataset.unit === u));
+  renderFxLabel();
+  refreshCurrentTab();
+});
+$$('#unitSwitch button').forEach(x => x.classList.toggle('on', x.dataset.unit === state.unit));
 function fmtTime(ts) {
   if (!ts) return '—';
   const d = new Date(ts);
@@ -112,7 +158,7 @@ $('#loginForm').addEventListener('submit', async (e) => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ token: $('#tokenInput').value }),
     });
-    if (r.ok) { $('#tokenInput').value = ''; showApp(); await refreshCurrentTab(); startPolling(); }
+    if (r.ok) { $('#tokenInput').value = ''; showApp(); await loadFx(); await refreshCurrentTab(); startPolling(); }
   } catch (err) { if (err.message !== 'UNAUTHORIZED') $('#loginErr').hidden = false; }
 });
 $('#logoutBtn').addEventListener('click', async () => {
@@ -152,11 +198,11 @@ function renderSummary(s) {
   $('#demoBadge').hidden = !isDemo;
   $('#liveBadge').hidden = isDemo;
   $('#modeLabel').textContent = isDemo ? 'DEMO · 模拟数据' : 'Gate.io API v4 · 实时';
-  $('#quoteTag').textContent = (s.latest && s.latest.totalCurrency) || s.quote || 'USD';
+  $('#quoteTag').textContent = unitTag();
   $('#footSource').textContent = isDemo ? '模拟数据生成器 (DEMO)' : 'Gate.io API v4';
   $('#sourceLabel').textContent = isDemo ? '模拟 (DEMO)' : 'Gate.io 实时';
   if (s.latest) {
-    $('#totalValue').textContent = fmtMoney(s.latest.totalUsd);
+    $('#totalValue').textContent = fmtUsd(s.latest.totalUsd);
     $('#updateTime').textContent = fmtTime(s.latest.ts);
     renderHoldings(s.latest, isDemo);
     renderDistribution(s.latest.accounts || []);
@@ -168,7 +214,7 @@ function renderSummary(s) {
     const up = s.deltaUsd >= 0;
     chip.className = 'delta-chip ' + (up ? 'up' : 'down');
     const sign = up ? '+' : '';
-    chip.textContent = `${sign}${fmtMoney(s.deltaUsd)} (${sign}${(s.deltaPct || 0).toFixed(2)}%)`;
+    chip.textContent = `${fmtSignedUsd(s.deltaUsd)} (${sign}${(s.deltaPct || 0).toFixed(2)}%)`;
   }
   const st = s.status || {};
   $('#intervalLabel').textContent = st.intervalSec ? `${st.intervalSec}s` : '—';
@@ -191,7 +237,7 @@ function renderDistribution(accounts) {
     const pct = (a.amount / total * 100), w = (a.amount / max * 100);
     return `<div class="dist-item">
       <div class="di-top"><span class="di-name">${escapeHtml(a.label || a.id || '账户')}</span>
-        <span class="di-val">${fmtMoney(a.amount)}<span class="di-pct">${pct.toFixed(1)}%</span></span></div>
+        <span class="di-val">${fmtUsd(a.amount)}<span class="di-pct">${pct.toFixed(1)}%</span></span></div>
       <div class="di-bar"><i style="width:${w.toFixed(1)}%;background:${colors[i % colors.length]}"></i></div>
     </div>`;
   }).join('');
@@ -203,7 +249,7 @@ function renderHoldings(latest, isDemo) {
   if (!hs.length) { body.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center;padding:26px">暂无持仓明细</td></tr>'; return; }
   const totalVal = hs.reduce((s, h) => s + (Number(h.valueUsd) || 0), 0);
   body.innerHTML = hs.map(h => {
-    const val = h.valueUsd !== undefined && h.valueUsd !== null ? fmtMoney(h.valueUsd) : '—';
+    const val = h.valueUsd !== undefined && h.valueUsd !== null ? fmtUsd(h.valueUsd) : '—';
     const pct = totalVal ? (Number(h.valueUsd || 0) / totalVal * 100) : 0;
     const ini = (h.currency || '?').slice(0, 3);
     return `<tr>
@@ -242,8 +288,8 @@ function renderChart() {
     <path d="${area}" fill="${fill}" stroke="none"/>
     <path d="${path}" fill="none" stroke="${line}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
     <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3.5" fill="${line}" stroke="#fff" stroke-width="2"/>`;
-  $('#chartMin').textContent = fmtMoney(min);
-  $('#chartMax').textContent = fmtMoney(max);
+  $('#chartMin').textContent = fmtUsd(min);
+  $('#chartMax').textContent = fmtUsd(max);
   $('#chartRange').textContent = data.length > 1
     ? `${fmtShortDate(data[0].ts)} → ${fmtShortDate(data[data.length - 1].ts)} · ${data.length} 点` : '';
   svg.onmousemove = (e) => {
@@ -255,7 +301,7 @@ function renderChart() {
     tip.hidden = false;
     tip.style.left = `${(pts[idx][0] / W * 100).toFixed(2)}%`;
     tip.style.top = `${(pts[idx][1] / H * 100).toFixed(2)}%`;
-    tip.textContent = `${fmtShortDate(data[idx].ts)}  ≈ ${fmtMoney(data[idx].totalUsd)}`;
+    tip.textContent = `${fmtShortDate(data[idx].ts)}  ≈ ${fmtUsd(data[idx].totalUsd)}`;
   };
   svg.onmouseleave = () => { $('#chartTip').hidden = true; };
 }
@@ -297,9 +343,9 @@ function renderAnalytics(a) {
       sub: `索提诺 ${s.sortino !== null ? fmtMoney(s.sortino, 2) : '—'} · 卡玛 ${s.calmar !== null ? fmtMoney(s.calmar, 2) : '—'}` },
     { label: `β (对 ${a.meta?.benchmark || 'BTC'})`, hint: '组合收益对基准收益的回归斜率', val: s.betaVsBenchmark !== null ? fmtMoney(s.betaVsBenchmark, 3) : '—', v: null,
       sub: `相关系数 ${fmtMoney(risk.correlationVsBenchmark, 3)}` },
-    { label: '显式成本合计', hint: '手续费 + 资金费绝对值', val: fmtMoney(s.totalExplicitCostUsd), v: null,
+    { label: '显式成本合计', hint: '手续费 + 资金费绝对值', val: fmtUsd(s.totalExplicitCostUsd), v: null,
       sub: `占均资产 ${cost.costToAvgAssetsPct !== null ? fmtMoney(cost.costToAvgAssetsPct, 4) + '%' : '—'}` },
-    { label: '净外部现金流', hint: '充值 − 提现；这部分不是收益', val: fmtSigned(s.netCashflowUsd), v: null,
+    { label: '净外部现金流', hint: '充值 − 提现；这部分不是收益', val: fmtSignedUsd(s.netCashflowUsd), v: null,
       sub: `${(a.cashflows || []).length} 笔现金流事件` },
   ];
   $('#kpiGrid').innerHTML = kpis.map(k => `<div class="kpi">
@@ -386,7 +432,7 @@ function renderCashflows(cfs) {
       <span class="cf-time">${fmtTime(c.ts)}</span>
       <span class="cf-type">${inFlow ? '充值' : '提现'} · ${escapeHtml(c.currency || '')}</span>
       <span class="cf-note">${escapeHtml(c.note || '')}</span>
-      <span class="cf-amt ${inFlow ? 'up' : 'down'}">${fmtSigned(c.cashflowUsd)} USD</span>
+      <span class="cf-amt ${inFlow ? 'up' : 'down'}">${fmtSignedUsd(c.cashflowUsd)}</span>
     </div>`;
   }).join('');
 }
@@ -398,10 +444,10 @@ function renderAttribution(agg) {
     const isRes = a.currency === '__RESIDUAL__';
     return `<tr class="${isRes ? 'row-residual' : ''}">
       <td>${isRes ? '残差 / 未覆盖' : `<b>${escapeHtml(a.currency)}</b>`}</td>
-      <td class="num ${cls(a.priceEffect)}">${fmtSigned(a.priceEffect)}</td>
-      <td class="num ${cls(a.qtyEffect)}">${fmtSigned(a.qtyEffect)}</td>
-      <td class="num ${cls(a.crossEffect)}">${fmtSigned(a.crossEffect)}</td>
-      <td class="num ${cls(a.deltaValueUsd)}"><b>${fmtSigned(a.deltaValueUsd)}</b></td>
+      <td class="num ${cls(a.priceEffect)}">${fmtSignedUsd(a.priceEffect)}</td>
+      <td class="num ${cls(a.qtyEffect)}">${fmtSignedUsd(a.qtyEffect)}</td>
+      <td class="num ${cls(a.crossEffect)}">${fmtSignedUsd(a.crossEffect)}</td>
+      <td class="num ${cls(a.deltaValueUsd)}"><b>${fmtSignedUsd(a.deltaValueUsd)}</b></td>
       <td class="num ${cls(a.contributionPct)}">${fmtPct(a.contributionPct)}</td>
     </tr>`;
   }).join('');
@@ -453,16 +499,16 @@ function renderRisk(risk, s) {
 }
 function renderCosts(cost, beh) {
   const rows = [
-    kv('手续费合计', fmtMoney(cost.totalFeeUsd)),
-    kv('资金费净额', fmtSigned(cost.fundingUsd), cls(cost.fundingUsd)),
-    kv('理财利息', fmtSigned(cost.interestUsd), cls(cost.interestUsd)),
-    kv('返佣 / 返利', fmtSigned(cost.rebateUsd), cls(cost.rebateUsd)),
-    kv('已实现盈亏', fmtSigned(cost.realisedPnlUsd), cls(cost.realisedPnlUsd)),
-    kv('显式成本合计', fmtMoney(cost.totalExplicitCostUsd)),
+    kv('手续费合计', fmtUsd(cost.totalFeeUsd)),
+    kv('资金费净额', fmtSignedUsd(cost.fundingUsd), cls(cost.fundingUsd)),
+    kv('理财利息', fmtSignedUsd(cost.interestUsd), cls(cost.interestUsd)),
+    kv('返佣 / 返利', fmtSignedUsd(cost.rebateUsd), cls(cost.rebateUsd)),
+    kv('已实现盈亏', fmtSignedUsd(cost.realisedPnlUsd), cls(cost.realisedPnlUsd)),
+    kv('显式成本合计', fmtUsd(cost.totalExplicitCostUsd)),
     kv('年化成本率', cost.annualisedCostPct !== null ? fmtPct(cost.annualisedCostPct, 3) : '—'),
     kv('成交腿数 / maker 占比', `${fmtMoney(cost.tradeLegs, 0)} / ${cost.makerRatioPct !== null ? fmtMoney(cost.makerRatioPct, 1) + '%' : '—'}`),
     kv('胜率 / 盈亏比', `${beh.winRatePct !== null ? fmtMoney(beh.winRatePct, 1) + '%' : '—'} / ${fmtMoney(beh.profitFactor, 2)}`),
-    kv('单笔期望(USD)', fmtSigned(beh.expectancyUsd)),
+    kv(`单笔期望(${unitTag()})`, fmtSignedUsd(beh.expectancyUsd)),
     kv('决策数 / 复盘覆盖', `${fmtMoney(beh.decisionsTotal, 0)} / ${beh.reviewCoveragePct !== null ? fmtMoney(beh.reviewCoveragePct, 0) + '%' : '—'}`),
   ];
   $('#costBox').innerHTML = rows.join('') + `<p class="muted small" style="margin:10px 0 4px;line-height:1.6">很多「策略不赚钱」其实是成本吃掉的。行为指标依赖已实现盈亏与人工决策日志。</p>`;
@@ -580,7 +626,7 @@ function renderOpStats(st, mode) {
     <div class="op-stat-item"><span>操作总数</span><b>${fmtMoney(st.total, 0)}</b></div>
     <div class="op-stat-item"><span>买卖成交</span><b>${fmtMoney(st.trades, 0)}</b></div>
     <div class="op-stat-item"><span>外部现金流</span><b>${fmtMoney(st.cashflow, 0)}</b></div>
-    <div class="op-stat-item"><span>手续费合计</span><b>${fmtMoney(st.feesUsd)} USD</b></div>
+    <div class="op-stat-item"><span>手续费合计</span><b>${fmtUsd(st.feesUsd)}</b></div>
     <div class="op-stat-item"><span>已注释 / 覆盖率</span><b>${fmtMoney(st.annotated, 0)} / ${cov !== undefined && cov !== null ? fmtMoney(cov, 1) + '%' : '—'}</b></div>
     <div class="op-stat-item"><span>数据来源</span><b>${mode === 'live' ? 'Gate.io API v4 · 只读' : 'DEMO 模拟流水'}</b></div>`;
 }
@@ -634,10 +680,10 @@ function renderOperations(ops, mode) {
       </div>
       <div class="op-nums">
         ${o.amount ? `<span>数量 <b>${fmtQty(o.amount)}</b></span>` : ''}
-        ${o.priceUsd ? `<span>单价 <b>${fmtMoney(o.priceUsd, 6)}</b></span>` : ''}
-        ${o.valueUsd ? `<span>估值 <b>${fmtMoney(o.valueUsd)} USD</b></span>` : ''}
+        ${o.priceUsd ? `<span>单价 <b>${fmtUsd(o.priceUsd, 6)}</b></span>` : ''}
+        ${o.valueUsd ? `<span>估值 <b>${fmtUsd(o.valueUsd)}</b></span>` : ''}
         ${o.feeUsd ? `<span>手续费 <b>${fmtMoney(o.feeUsd, 4)}${o.feeCurrency ? ' ' + escapeHtml(o.feeCurrency) : ''}</b></span>` : ''}
-        ${o.isCashflow ? `<span>现金流 <b class="${cls(o.cashflowUsd)}">${fmtSigned(o.cashflowUsd)} USD</b></span>` : ''}
+        ${o.isCashflow ? `<span>现金流 <b class="${cls(o.cashflowUsd)}">${fmtSignedUsd(o.cashflowUsd)}</b></span>` : ''}
         <span class="muted small">${escapeHtml(o.venue || 'spot')} · ${(o.eventIds || []).length || 1} 条 Gate 原始事件</span>
       </div>
       ${o.note ? `<div class="op-note muted small">${escapeHtml(o.note)}</div>` : ''}
@@ -811,7 +857,7 @@ function renderReportPreview(rep) {
     </div>`;
   }).join('');
   const brief = (rep.marketBrief || []).map(b =>
-    `<div class="rp-line"><span>${escapeHtml(b.symbol)}</span><b>${b.lastPrice === null ? '—' : fmtMoney(b.lastPrice, 2)} USD · 24h <em class="${cls(b.chg24Pct)}">${fmtPct(b.chg24Pct)}</em> · 区间 ${fmtPct(b.chgWindowPct)}</b></div>`).join('');
+    `<div class="rp-line"><span>${escapeHtml(b.symbol)}</span><b>${b.lastPrice === null ? '—' : fmtUsd(b.lastPrice, 2)} · 24h <em class="${cls(b.chg24Pct)}">${fmtPct(b.chg24Pct)}</em> · 区间 ${fmtPct(b.chgWindowPct)}</b></div>`).join('');
   $('#rpPreview').innerHTML = `
     <div class="rp-headline">${escapeHtml(rep.headline || '')}</div>
     <div class="rp-meta">生成于 ${escapeHtml(m.generatedAtLocal || '')} (${escapeHtml(m.tzLabel || '')}) · 窗口 ${fmtTime(m.windowFrom)} → ${fmtTime(m.windowTo)} · 主基准 ${escapeHtml(m.benchmarkMain || 'BTC')} · ${m.windowReliable ? '年化指标可用' : '年化指标仅供参考'}</div>
@@ -949,7 +995,7 @@ async function loadEnrichHeadline() {
   } catch (e) { /* optional data must never break the overview */ }
 }
 
-function enrNum(v, d = 2) { return v === null || v === undefined ? '—' : escapeHtml(fmtMoney(v, d)); }
+function enrNum(v, d = 2) { return v === null || v === undefined ? '—' : escapeHtml(fmtUsd(v, d)); }
 const enrPct = (v) => v === null || v === undefined ? '—' : `<span class="${cls(v)}">${fmtPct(v)}</span>`;
 
 /** Generic small table card, used only inside the collapsed panel. */
@@ -1017,14 +1063,14 @@ function renderEnrichDetail(enr) {
 
   const cards = [];
   cards.push(`<div class="enr-card"><h3>全市场宽度趋势 <span class="muted small">· 上涨占比</span></h3>${enrSpark(d.breadthTrend)}
-    <div class="enr-note muted small">中位涨跌 ${fmtPct(s.medianChangePct)} · 24h 成交额 ${s.totalQuoteVolumeUsd === null || s.totalQuoteVolumeUsd === undefined ? '—' : '$' + fmtMoney(s.totalQuoteVolumeUsd, 0)}</div></div>`);
+    <div class="enr-note muted small">中位涨跌 ${fmtPct(s.medianChangePct)} · 24h 成交额 ${s.totalQuoteVolumeUsd === null || s.totalQuoteVolumeUsd === undefined ? '—' : fmtUsd(s.totalQuoteVolumeUsd, 0)}</div></div>`);
 
   cards.push(enrCard('持仓 Ticker 全字段（我实际持有的币）', [
     { label: '币种', key: 'currency' },
     { label: '最新价', key: 'last', num: true, fmt: v => enrNum(v, 6) },
     { label: '24h', key: 'change24Pct', num: true, fmt: enrPct },
     { label: '振幅', key: 'amplitude24Pct', num: true, fmt: enrPct },
-    { label: '成交额(USD)', key: 'quoteVolumeUsd', num: true, fmt: v => enrNum(v, 0) },
+    { label: `成交额(${unitTag()})`, key: 'quoteVolumeUsd', num: true, fmt: v => enrNum(v, 0) },
     { label: '价差', key: 'spreadPct', num: true, fmt: v => v === null || v === undefined ? '—' : fmtMoney(v, 4) + '%' },
   ], d.liquidity, '按成交额排序'));
 
@@ -1038,7 +1084,7 @@ function renderEnrichDetail(enr) {
   ]));
   cards.push(enrCard('成交额榜', [
     { label: '交易对', key: 'pair' },
-    { label: '24h 成交额(USD)', key: 'quoteVolumeUsd', num: true, fmt: v => enrNum(v, 0) },
+    { label: `24h 成交额(${unitTag()})`, key: 'quoteVolumeUsd', num: true, fmt: v => enrNum(v, 0) },
   ], d.topByVolume));
 
   cards.push(enrCard('盘口深度（前 5 档）', [
@@ -1046,8 +1092,8 @@ function renderEnrichDetail(enr) {
     { label: '买一', key: 'bestBid', num: true, fmt: v => enrNum(v, 6) },
     { label: '卖一', key: 'bestAsk', num: true, fmt: v => enrNum(v, 6) },
     { label: '价差', key: 'spreadPct', num: true, fmt: v => v === null || v === undefined ? '—' : fmtMoney(v, 4) + '%' },
-    { label: '买盘(USD)', key: 'bidDepthUsd', num: true, fmt: v => enrNum(v, 0) },
-    { label: '卖盘(USD)', key: 'askDepthUsd', num: true, fmt: v => enrNum(v, 0) },
+    { label: `买盘(${unitTag()})`, key: 'bidDepthUsd', num: true, fmt: v => enrNum(v, 0) },
+    { label: `卖盘(${unitTag()})`, key: 'askDepthUsd', num: true, fmt: v => enrNum(v, 0) },
   ], d.books));
 
   cards.push(enrCard('合约市场（资金费 / 基差 / 持仓量）', [
@@ -1068,8 +1114,8 @@ function renderEnrichDetail(enr) {
     { k: '合约 taker / maker', v: `${fee ? fmtMoney(fee.futures_taker_fee_pct, 3) : '—'}% / ${fee ? fmtMoney(fee.futures_maker_fee_pct, 3) : '—'}%` },
     { k: 'GT 抵扣', v: fee ? (fee.gt_discount ? '已开启' : '未开启') : '—' },
     { k: '借贷费率', v: fee ? fmtMoney(fee.loan_fee_pct, 3) + '%' : '—' },
-    { k: '账本实扣合计', v: fa.actualFeesUsd === undefined ? '—' : '$' + fmtMoney(fa.actualFeesUsd, 2) },
-    { k: '显式成本合计', v: fa.explicitCostUsd === undefined || fa.explicitCostUsd === null ? '—' : '$' + fmtMoney(fa.explicitCostUsd, 2) },
+    { k: '账本实扣合计', v: fa.actualFeesUsd === undefined ? '—' : fmtUsd(fa.actualFeesUsd, 2) },
+    { k: '显式成本合计', v: fa.explicitCostUsd === undefined || fa.explicitCostUsd === null ? '—' : fmtUsd(fa.explicitCostUsd, 2) },
     { k: 'maker 占比', v: fa.makerRatioPct === undefined || fa.makerRatioPct === null ? '—' : fmtMoney(fa.makerRatioPct, 1) + '%' },
   ], '口径不同，不做机械相减'));
 
@@ -1086,24 +1132,24 @@ function renderEnrichDetail(enr) {
   cards.push(enrCard('持仓强平距离', [
     { label: '合约', key: 'contract' }, { label: '杠杆', key: 'leverage' },
     { label: '距强平', key: 'liqDistancePct', num: true, fmt: v => v === null || v === undefined ? '—' : fmtMoney(v, 2) + '%' },
-    { label: '未实现盈亏', key: 'unrealisedPnl', num: true, fmt: v => v === null || v === undefined ? '—' : `<span class="${cls(v)}">${fmtSigned(v)}</span>` },
+    { label: '未实现盈亏', key: 'unrealisedPnl', num: true, fmt: v => v === null || v === undefined ? '—' : `<span class="${cls(v)}">${fmtSignedUsd(v)}</span>` },
   ], d.positions));
 
   const cap = d.capital || {};
   cards.push(enrCard('资金利用率', [
     { label: '项目', key: 'k' }, { label: '数值', key: 'v' },
   ], [
-    { k: '总资产', v: cap.totalUsd === undefined ? '—' : '$' + fmtMoney(cap.totalUsd, 2) },
-    { k: '借款合计', v: cap.borrowedUsd === undefined ? '—' : '$' + fmtMoney(cap.borrowedUsd, 2) },
+    { k: '总资产', v: cap.totalUsd === undefined ? '—' : fmtUsd(cap.totalUsd, 2) },
+    { k: '借款合计', v: cap.borrowedUsd === undefined ? '—' : fmtUsd(cap.borrowedUsd, 2) },
     { k: '借款 / 总资产', v: fmtPct(cap.borrowedToTotalPct) },
-    { k: '未实现盈亏', v: cap.unrealisedPnlUsd === undefined ? '—' : fmtSigned(cap.unrealisedPnlUsd) },
+    { k: '未实现盈亏', v: cap.unrealisedPnlUsd === undefined ? '—' : fmtSignedUsd(cap.unrealisedPnlUsd) },
     { k: '冻结占比（估值加权）', v: fmtPct(cap.lockedSharePct) },
     { k: '可用 / 冻结数量', v: `${fmtQty(cap.availableQty)} / ${fmtQty(cap.lockedQty)}（跨币种仅供参考）` },
   ]));
   cards.push(enrCard('充提链分布', [
     { label: '链', key: 'chain' }, { label: '笔数', key: 'count', num: true },
     { label: '充值/提现', key: 'mix', num: true },
-    { label: '金额(USD)', key: 'volume_usd', num: true, fmt: v => enrNum(v, 2) },
+    { label: `金额(${unitTag()})`, key: 'volume_usd', num: true, fmt: v => enrNum(v, 2) },
     { label: '最近', key: 'last_iso_utc' },
   ], (d.chains || []).map(c => ({ ...c, mix: `${c.deposits}/${c.withdraws}` })), '链名来自 Gate 账本备注解析'));
 
@@ -1188,7 +1234,10 @@ const MK_CAT = { macro: '宏观', policy: '政策监管', onchain: '链上资金
 async function loadMarket() {
   try {
     const qs = new URLSearchParams();
-    if (state.mkPreset && state.mkPreset !== 'ALL') qs.set('preset', state.mkPreset);
+    if (state.mkPreset === 'CUSTOM') {
+      if (state.mkFromDate) qs.set('fromDate', state.mkFromDate);
+      if (state.mkToDate) qs.set('toDate', state.mkToDate);
+    } else if (state.mkPreset && state.mkPreset !== 'ALL') qs.set('preset', state.mkPreset);
     if (state.mkSymbols && state.mkSymbols.length) qs.set('symbols', state.mkSymbols.join(','));
     const m = await api('/api/market?' + qs.toString());
     state.market = m;
@@ -1215,11 +1264,14 @@ function renderMarket(m) {
     `<span class="mk-reason-text">${escapeHtml(x.text)}</span></div>`).join('')
     || '<div class="mk-reason"><span class="mk-reason-text muted">区间内数据不足，无法生成原因分析。</span></div>';
 
+  const modeTag = s.windowSource === 'utc-dates' ? '自定义 UTC 日期' :
+    s.windowPreset ? `快捷区间 ${s.windowPreset}` : (s.windowSource === 'epoch' ? '指定时间戳' : '全部可用快照');
   $('#mkWindowLabel').textContent = s.from
-    ? `${s.from} → ${s.to} (UTC) · ${s.points} 个快照 · 基准 ` +
+    ? `${modeTag} · ${s.from} → ${s.to} (UTC) · ${s.points} 个快照 · 基准 ` +
       Object.entries(s.benchmarkSources || {}).map(([k, x]) => `${k}(${x})`).join(', ')
-    : '—';
+    : `${modeTag} · 请求 ${s.requestedFrom || '—'} → ${s.requestedTo || '—'} (UTC) · 所选区间内快照不足`;
 
+  renderMkPrices(m);
   renderMkChips(m);
   renderMkLegend(m);
   renderMkChart(m);
@@ -1227,6 +1279,22 @@ function renderMarket(m) {
   renderMkEvents(m);
   renderMkEventStudy(m);
   $$('#mkRangeTabs button').forEach(b => b.classList.toggle('active', b.dataset.preset === state.mkPreset));
+}
+
+function renderMkPrices(m) {
+  const el = $('#mkPrices'); if (!el) return;
+  const prices = (m.meta && m.meta.lastPrices) || {};
+  const rows = Object.entries(prices).filter(([, v]) => v && Number.isFinite(Number(v.priceUsd)));
+  if (!rows.length) {
+    el.innerHTML = '<div class="muted small">暂无已收盘 K 线价格。</div>';
+    return;
+  }
+  el.innerHTML = rows.map(([sym, v]) => `
+    <div class="mk-price">
+      <div class="sym">${escapeHtml(sym)}/USDT</div>
+      <div class="px">${fmtUsd(v.priceUsd, v.priceUsd >= 100 ? 2 : 4)}</div>
+      <div class="ts">${fmtTime(v.ts)} · ${unitTag()}</div>
+    </div>`).join('');
 }
 
 function renderMkChips(m) {
@@ -1377,6 +1445,21 @@ $('#mkRangeTabs').addEventListener('click', (e) => {
   state.mkPreset = b.dataset.preset;
   loadMarket();
 });
+$('#mkCustomForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const from = $('#mkFromDate').value, to = $('#mkToDate').value;
+  if (!from && !to) { toast('请至少填写一个日期'); return; }
+  if (from && to && from > to) { toast('起始日期不能晚于结束日期'); return; }
+  state.mkPreset = 'CUSTOM';
+  state.mkFromDate = from; state.mkToDate = to;
+  loadMarket();
+});
+$('#mkCustomClear').addEventListener('click', () => {
+  $('#mkFromDate').value = ''; $('#mkToDate').value = '';
+  state.mkFromDate = ''; state.mkToDate = '';
+  state.mkPreset = '24H';
+  loadMarket();
+});
 $('#mkSymbolChips').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-sym]');
   if (!b) return;
@@ -1430,6 +1513,8 @@ $('#mkEventForm').addEventListener('submit', async (e) => {
     state.authEnabled = st.enabled;
     if (!st.enabled || st.authed) {
       showApp();
+      await loadFx();
+      setInterval(() => { loadFx(); }, 6 * 3600 * 1000);
       // Deep link: ?tab=overview|analytics|market|operations|report|export
       // Old ?tab=decisions is aliased to operations inside switchTab().
       const qp = new URLSearchParams(location.search).get('tab');

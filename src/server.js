@@ -7,7 +7,7 @@
  *   - append-only FACT datasets (events / prices / decisions / annotations /
  *     reports) with a tamper-evident hash chain
  *   - analytics engine (NAV / TWR / MWR / attribution / risk / cost / behaviour)
- *   - unified export: 34 tidy tables, CSV / JSON / JSONL, data dictionary, ZIP bundle + 9 raw JSONL
+ *   - unified export: 35 tidy tables, CSV / JSON / JSONL, data dictionary, ZIP bundle + 9 raw JSONL
  *   - extended enrichment: market breadth / liquidity / fee schedule / futures risk /
  *     capital usage / deposit chains (low-frequency, isolated, never pollutes lastError)
  *   - market context: public Gate candles (no key) + append-only macro-event ledger
@@ -42,6 +42,8 @@ const wecom = require('./wecom');
 const enrichAnalytics = require('./enrichAnalytics');
 const diskGuard = require('./diskGuard');
 const marketCadence = require('./marketCadence');
+const marketWindow = require('./marketWindow');
+const fx = require('./fx');
 const zip = require('./zip');
 const { writeStream } = require('./httpStream');
 const loginGuard = require('./loginGuard');
@@ -64,6 +66,8 @@ let pruneTimer = null;
 let reportTimer = null;
 let lastReportLocalDate = null;      // de-dup guard for the daily scheduler
 let priceTick = 0;
+let fxTimer = null;
+const fxClient = fx.createFxClient({ root: config.root, ttlMs: config.fx.ttlSec * 1000 });
 const state = {
   lastRunAt: null,
   lastError: null,
@@ -72,6 +76,7 @@ const state = {
   lastMarketAt: null, lastMarketNotes: [],
   lastReportAt: null, lastReportOk: null, lastReportMessage: null,
   lastEnrichAt: null, lastEnrichNotes: [],
+  fx: fxClient.current(),
   disk: null, diskLevelLogged: null,
   running: false,
   startedAt: Date.now(),
@@ -80,6 +85,24 @@ const state = {
 const loginAttempts = new Map();
 
 /* ------------------------------- collector ------------------------------- */
+
+/** Reference FX never blocks boot or collector: failures keep the last value. */
+async function refreshFx(force = false) {
+  if (!config.fx.enabled) return state.fx;
+  try {
+    state.fx = await fxClient.refresh(force);
+  } catch (e) {
+    state.fx = Object.assign({}, state.fx, { stale: true, error: e.message });
+  }
+  return state.fx;
+}
+
+function startFxScheduler() {
+  if (!config.fx.enabled) return;
+  refreshFx().then(r => console.log(`[fx] ${r.rateLabel}${r.stale ? ' (stale/cached)' : ''}`));
+  fxTimer = setInterval(() => { refreshFx().catch(() => {}); }, config.fx.ttlSec * 1000);
+  fxTimer.unref?.();
+}
 
 async function collectLiveFacts() {
   const last = facts.events.last();
@@ -100,6 +123,20 @@ async function collectLiveFacts() {
 /** Use only the active candle cadence; keep legacy 1h rows in the raw export. */
 function marketPointsForAnalytics() {
   return marketCadence.activeMarketPoints(facts.listMarketPoints(), config.market.candleIntervalSec);
+}
+
+/** Latest closed candle per benchmark symbol, for the unit-switch price strip. */
+function lastMarketPrices(rows = marketPointsForAnalytics()) {
+  const out = {};
+  for (const p of rows) {
+    const sym = String(p.symbol || '').toUpperCase();
+    if (!sym) continue;
+    const px = Number(p.close);
+    if (!Number.isFinite(px)) continue;
+    const ts = Number(p.ts) || 0;
+    if (!out[sym] || ts > out[sym].ts) out[sym] = { priceUsd: px, ts, intervalSec: Number(p.intervalSec) || null };
+  }
+  return out;
 }
 
 /** Last ACTIVE benchmark timestamp, used for an incremental candle refresh. */
@@ -590,6 +627,7 @@ async function handleApi(req, res, url) {
         reportCount: facts.listReports().length,
         enrichEnabled: config.enrich.collect, enrichCount: facts.enrichment.count(),
         lastEnrichAt: state.lastEnrichAt, lastEnrichNotes: state.lastEnrichNotes,
+        fx: state.fx,
         diskGuard: state.disk, diskGuardConfig: config.disk,
       },
     });
@@ -666,16 +704,26 @@ async function handleApi(req, res, url) {
     } catch (err) { return json(res, 502, { ok: false, error: err.message }); }
   }
 
+  /* ---------- USD/CNY reference rate (display conversion only) ---------- */
+  if (p === '/api/fx' && method === 'GET') {
+    if (url.searchParams.get('refresh') === '1') await refreshFx(true);
+    return json(res, 200, {
+      ...state.fx, enabled: config.fx.enabled,
+      note: '仅用于界面单位换算；事实层与分析指标始终以 USD 存储与计算。',
+    });
+  }
+
   /* ---------- market context: benchmark comparison + macro events -------- */
   if (p === '/api/market' && method === 'GET') {
     const { input, analysis } = getAnalysis();
-    const preset = (url.searchParams.get('preset') || '').toUpperCase();
-    let fromMs = url.searchParams.get('from') ? Number(url.searchParams.get('from')) : undefined;
-    let toMs = url.searchParams.get('to') ? Number(url.searchParams.get('to')) : undefined;
-    const PRESETS = { '8H': 8 * 3600e3, '24H': 24 * 3600e3, '7D': 7 * 86400e3, '30D': 30 * 86400e3 };
-    if (!fromMs && PRESETS[preset]) {
-      fromMs = Date.now() - PRESETS[preset]; toMs = Date.now();
-    }
+    const win = marketWindow.resolve({
+      preset: url.searchParams.get('preset') || '',
+      from: url.searchParams.get('from'), to: url.searchParams.get('to'),
+      fromDate: url.searchParams.get('fromDate'), toDate: url.searchParams.get('toDate'),
+      now: Date.now(),
+    });
+    if (!win.ok) return json(res, 400, { error: win.error, message: win.message });
+    const fromMs = win.fromMs, toMs = win.toMs;
     const symbols = url.searchParams.get('symbols')
       ? url.searchParams.get('symbols').split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
       : config.market.symbols;
@@ -686,11 +734,20 @@ async function handleApi(req, res, url) {
       eventWindowBars: config.market.eventWindowBars,
       indexWeights: config.market.indexWeights,
     });
+    const enriched = Object.assign({}, mk, {
+      meta: Object.assign({}, mk.meta, {
+        windowSource: win.source, windowPreset: win.preset,
+        requestedFrom: win.fromLabel, requestedTo: win.toLabel,
+        fromDate: win.fromDate, toDate: win.toDate,
+        lastPrices: lastMarketPrices(),
+        fx: state.fx,
+      }),
+    });
     if (view === 'compact') {
-      const { comparisonRows, eventRows, points, normalized, ...rest } = mk;
+      const { comparisonRows, eventRows, points, normalized, ...rest } = enriched;
       return json(res, 200, rest);
     }
-    return json(res, 200, mk);
+    return json(res, 200, enriched);
   }
   if (p === '/api/market/refresh' && method === 'POST') {
     if (config.mode !== 'live') return json(res, 400, { error: 'ONLY_LIVE', message: '仅 live 模式可拉取真实公开行情' });
@@ -739,7 +796,7 @@ async function handleApi(req, res, url) {
   /* ---------- datasets / schema / integrity ---------- */
   if (p === '/api/datasets' && method === 'GET') {
     const { input, analysis } = getAnalysis();
-    const T = exporter.buildTables({ ...input, analysis });
+    const T = exporter.buildTables({ ...input, analysis, fx: state.fx });
     return json(res, 200, {
       mode: config.mode, generatedAt: new Date().toISOString(),
       datasets: exporter.datasetCatalog(T),
@@ -770,14 +827,14 @@ async function handleApi(req, res, url) {
     if (!exporter.DATASET_ORDER.includes(name)) return json(res, 400, { error: 'UNKNOWN_DATASET', available: exporter.DATASET_ORDER });
     if (!['csv', 'json', 'jsonl'].includes(format)) return json(res, 400, { error: 'UNKNOWN_FORMAT' });
     const { input, analysis } = getAnalysis();
-    const T = exporter.buildTables({ ...input, analysis });
+    const T = exporter.buildTables({ ...input, analysis, fx: state.fx });
     const out = exporter.serialise(name, T, format);
     return download(res, out.body, `gate-${name}-${stamp()}.${out.ext}`, out.contentType);
   }
   if (p === '/api/export/all' && method === 'GET') {
     const { input, analysis } = getAnalysis();
     const { entries, manifest, prefix } = exporter.buildBundleEntries({
-      ...input, analysis, rawFiles: facts.rawFiles(),
+      ...input, analysis, fx: state.fx, rawFiles: facts.rawFiles(),
     });
     // Streamed: peak memory is the largest single table, not 2x the ZIP.
     res.writeHead(200, {
@@ -1073,9 +1130,10 @@ function banner() {
     `  benchmark   : ${config.analytics.benchmark}   riskFree=${config.analytics.riskFreeRate}`,
     `  market      : ${config.market.symbols.join('/')} @${config.market.candleInterval} (public, no key) | sync ${config.market.marketSync.aligned ? 'OK' : 'COARSER'} (${config.market.marketSync.snapshotsPerCandle} snapshot(s)/bar) | auto-events ${config.market.autoEvents ? 'on' : 'off'}`,
     `  data files  : snapshots / events / prices / decisions / market / macro_events / annotations / reports / enrichment .jsonl (9 raw, 8 hash chains)`,
-    `  export      : /api/export/all (ZIP, 34 tables + dictionary + 9 raw JSONL)`,
+    `  export      : /api/export/all (ZIP, 35 tables + dictionary + 9 raw JSONL)`,
     `  enrichment  : ${config.enrich.collect ? 'ON' : 'OFF'} every ${enrichEvery()} collector cycles | detail<=${config.enrich.maxDetail} | books<=${config.enrich.maxBookPairs} | contracts ${config.enrich.futuresContracts.join('/')} | /api/enrichment`,
-    `  market API  : /api/market | /api/macro-events`,
+    `  market API  : /api/market (24H/7D/30D/180D + UTC dates) | /api/macro-events | /api/fx`,
+    `  fx          : ${config.fx.enabled ? 'ON' : 'OFF'} ${state.fx.rateLabel} · ${state.fx.provider || 'no provider'} · TTL ${config.fx.ttlSec}s (display only)`,
     `  operations  : /api/operations (Gate read-only mirror) | /api/operations/annotate | /api/metric-glossary`,
     `  daily report: ${config.report.enabled ? 'ON' : 'OFF'} @${String(config.report.hour).padStart(2, '0')}:${String(config.report.minute).padStart(2, '0')} UTC${config.report.tzOffsetHours >= 0 ? '+' : ''}${config.report.tzOffsetHours} | preset ${config.report.preset} | SPLIT asset+market | wecom ${wecom.configured(config) ? 'configured (' + wecom.status(config).maskedWebhook + ')' : 'NOT configured'}`,
     `  report API  : /api/report/preview | /send | /test | /history | /status`,
@@ -1102,6 +1160,7 @@ function banner() {
 
 server.listen(config.server.port, config.server.host, () => {
   banner();
+  startFxScheduler();
   startCollector();
   startReportScheduler();
 });
@@ -1110,6 +1169,7 @@ function shutdown() {
   if (collectorTimer) clearInterval(collectorTimer);
   if (pruneTimer) clearInterval(pruneTimer);
   if (reportTimer) clearInterval(reportTimer);
+  if (fxTimer) clearInterval(fxTimer);
   server.close(() => process.exit(0));
   setTimeout(() => process.exit(0), 2000).unref();
 }

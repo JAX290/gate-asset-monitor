@@ -66,6 +66,11 @@ b{font-weight:600}
 .brand-txt strong{font-size:15px;font-weight:600}
 .brand-txt small{font-size:11px;color:var(--text-3);letter-spacing:.3px}
 .top-actions{display:flex;align-items:center;gap:9px}
+.fx-label{font-size:11px;color:var(--text-3);font-variant-numeric:tabular-nums;white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}
+.unit-switch{display:flex;gap:2px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:2px}
+.unit-switch button{border:none;background:none;color:var(--text-2);font-family:inherit;font-size:11.5px;font-weight:600;
+  padding:4px 9px;border-radius:6px;cursor:pointer;transition:.15s}
+.unit-switch button.on{background:var(--card);color:var(--accent);box-shadow:0 1px 2px rgba(0,0,0,.06)}
 .badge{font-size:11px;font-weight:600;padding:4px 10px;border-radius:20px;letter-spacing:.3px}
 .badge.demo{background:var(--demo-bg);color:var(--demo)}
 .badge.live{background:var(--down-bg);color:var(--down)}
@@ -299,6 +304,14 @@ b{font-weight:600}
 .mk-chip:hover{border-color:var(--accent);color:var(--accent)}
 .mk-chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
 .mk-window-label{margin:10px 0 0;font-size:11.5px}
+.mk-custom{margin-top:10px;padding-top:10px;border-top:1px solid var(--border-2)}
+.mk-custom input[type=date]{border:1px solid var(--border);border-radius:8px;padding:6px 9px;font-family:inherit;font-size:12px;color:var(--text);background:var(--card)}
+.mk-price-card{padding:14px 20px 16px;margin-bottom:18px}
+.mk-prices{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.mk-price{border:1px solid var(--border-2);background:var(--bg);border-radius:9px;padding:8px 12px;min-width:132px}
+.mk-price .sym{font-size:11px;color:var(--text-3);font-weight:600;letter-spacing:.04em}
+.mk-price .px{font-family:var(--mono);font-size:13.5px;font-weight:600;margin-top:2px}
+.mk-price .ts{font-size:10.5px;color:var(--text-3);margin-top:1px}
 
 .mk-chart-card{margin-bottom:18px}
 .mk-chart-wrap{height:280px}
@@ -399,7 +412,11 @@ b{font-weight:600}
   .mk-verdict{font-size:18px;padding:8px 14px;white-space:normal}
   .mk-reason{flex-direction:column;gap:2px}
   .mk-reason-label{flex:none;padding-top:0}
+  .fx-label{display:none}
   .mk-controls{padding:14px 12px}
+  .mk-custom{align-items:stretch}
+  .mk-custom input[type=date]{width:100%}
+  .mk-price-card{padding:14px 12px}
   .mk-ctrl-row{flex-direction:column;align-items:flex-start;gap:9px}
   .mk-ctrl-row .range-tabs{width:100%;justify-content:space-between}
   .mk-ctrl-row .range-tabs button{flex:1;padding:6px 4px;font-size:11.5px}

@@ -629,6 +629,21 @@ const SCHEMA = {
       C('last_iso_utc', 'iso8601', 'UTC', '最近一笔 ISO 时间'),
     ],
   },
+  fx_rates: {
+    title: 'USD/CNY 参考汇率', grain: '一行 = 一次汇率采样（当前值，展示换算用）',
+    columns: [
+      C('ts_ms', 'integer', 'ms', '本次汇率抓取时间'),
+      C('ts_iso_utc', 'iso8601', 'UTC', '本次汇率抓取时间'),
+      C('base_currency', 'string', '', '基准币种：USD'),
+      C('quote_currency', 'string', '', '目标币种：CNY'),
+      C('usd_to_cny', 'number', 'CNY/USD', '1 USD 可兑换的 CNY 数量'),
+      C('provider', 'string', '', '公开汇率来源'),
+      C('source_time_ms', 'integer', 'ms', '数据源公布的报价时间'),
+      C('source_time_iso_utc', 'iso8601', 'UTC', '数据源公布的报价时间'),
+      C('stale', 'boolean', '', 'true=来自缓存且未能刷新'),
+      C('note', 'string', '', '口径说明：仅展示换算，事实层与分析指标仍为 USD'),
+    ],
+  },
   dictionary: {
     title: '数据字典', grain: '一行 = 一个数据集的一个字段',
     columns: [
@@ -647,7 +662,7 @@ const DATASET_ORDER = ['snapshots', 'holdings', 'accounts', 'events', 'prices', 
   'operations', 'operation_annotations', 'annotation_events', 'metric_glossary', 'daily_reports',
   'enrichment', 'ticker_detail', 'market_breadth', 'fee_schedule', 'order_book_depth',
   'futures_market', 'account_state', 'capital_usage', 'deposit_chains',
-  'dictionary'];
+  'fx_rates', 'dictionary'];
 
 // v5 tables are rebuilt straight from the raw enrichment.jsonl chain, so the
 // offline CLI and any third party can reproduce them without trusting our
@@ -922,6 +937,17 @@ function buildTables(input) {
   const enrT = enrichAnalytics.buildTables(enrichment);
   enrT.deposit_chains = enrichAnalytics.buildChains(events);
   for (const name of ENRICH_TABLES) put(name, enrT[name] || []);
+
+  // ---- USD/CNY reference rate (current snapshot, display conversion only) ----
+  const fxRec = input.fx || {};
+  put('fx_rates', fxRec.rate ? [{
+    ts_ms: fxRec.fetchedMs || null, ts_iso_utc: iso(fxRec.fetchedMs),
+    base_currency: fxRec.base || 'USD', quote_currency: fxRec.quote || 'CNY',
+    usd_to_cny: fxRec.rate, provider: fxRec.provider || '',
+    source_time_ms: fxRec.sourceTimeMs || null, source_time_iso_utc: fxRec.sourceTimeIso || '',
+    stale: !!fxRec.stale,
+    note: '仅用于界面单位换算；事实层与所有分析指标仍以 USD 存储与计算',
+  }] : []);
 
   // dictionary (generated from SCHEMA, single source of truth)
   const dictRows = [];

@@ -1,6 +1,6 @@
 # Gate 账户资产监测系统 · 资产分析 / 操作记录 / 日报 / 扩展行情版 (v5)
 
-一个**只读**的 Gate.io 账户资产监测 + **资产分析** + **市场对比** + **操作记录注释** + **每日日报**服务:定时采集账户估值/持仓快照与 Gate 真实操作流水,存成 **append-only + SHA-256 哈希链**的事实数据层,在此之上计算单位净值/TWR、逐币种涨跌贡献、风险/成本/行为指标,并为每个指标给出**来源 / 计算口径 / 走势意味着什么 / 常见误读**;叠加**主流币基准行情与大环境事件**做区间对比和跑赢/跑输归因;每天自动生成**资产日报**(最近行情 + 资产总结 + 数据驱动的处置观察),通过**企业微信机器人**推送;**全部数据可导出供第三方分析**(34 张整齐长表 + 数据字典 + ZIP + 9 个原始文件字节副本)。部署在**你自己的 VPS**,**仅允许 Tailscale 组网内的设备访问**,公网完全不可达。
+一个**只读**的 Gate.io 账户资产监测 + **资产分析** + **市场对比** + **操作记录注释** + **每日日报**服务:定时采集账户估值/持仓快照与 Gate 真实操作流水,存成 **append-only + SHA-256 哈希链**的事实数据层,在此之上计算单位净值/TWR、逐币种涨跌贡献、风险/成本/行为指标,并为每个指标给出**来源 / 计算口径 / 走势意味着什么 / 常见误读**;叠加**主流币基准行情与大环境事件**做区间对比和跑赢/跑输归因;每天自动生成**资产日报**(最近行情 + 资产总结 + 数据驱动的处置观察),通过**企业微信机器人**推送;**全部数据可导出供第三方分析**(35 张整齐长表 + 数据字典 + ZIP + 9 个原始文件字节副本)。部署在**你自己的 VPS**,**仅允许 Tailscale 组网内的设备访问**,公网完全不可达。
 
 > 看板六个视图:**总览 / 资产分析 / 市场对比 / 操作记录 / 日报 / 导出中心**。口径真相源是 [`docs/METRICS.md`](docs/METRICS.md) 与 `src/metricGlossary.js`;看板「指标详解」面板、`metric_glossary` 导出表、ZIP 三处口径一致,不凭记忆改公式。
 >
@@ -83,7 +83,7 @@
 
 用户硬要求「**所有数据都要可以导出可供第三方分析**」,因此导出分三层,无歧义覆盖:
 
-1. **34 张整齐长表**(tidy long tables,一行一观测):`snapshots / holdings / accounts / events / prices / decisions / decision_events / market / macro_events / macro_event_log / benchmark_comparison / relative_metrics / event_windows / cashflows / nav / attribution / attribution_agg / distribution / metrics /` **`operations / operation_annotations / annotation_events / metric_glossary / daily_reports`** `/` **`enrichment / ticker_detail / market_breadth / fee_schedule / order_book_depth / futures_market / account_state / capital_usage / deposit_chains`** `/ dictionary`。
+1. **35 张整齐长表**(tidy long tables,一行一观测):`snapshots / holdings / accounts / events / prices / decisions / decision_events / market / macro_events / macro_event_log / benchmark_comparison / relative_metrics / event_windows / cashflows / nav / attribution / attribution_agg / distribution / metrics /` **`operations / operation_annotations / annotation_events / metric_glossary / daily_reports`** `/` **`enrichment / ticker_detail / market_breadth / fee_schedule / order_book_depth / futures_market / account_state / capital_usage / deposit_chains`** `/` **`fx_rates`** `/ dictionary`。
    - 市场相关 6 张覆盖基准行情、事件台账(当前态 + 原始审计链)、归一化对比、相对指标、事件窗口复盘。
    - `decisions` = 折叠后的**当前状态**;`decision_events` = 未折叠的**原始审计链**(每条 create/edit/review/delete,含 `payload_json` 与哈希),二者互补。
    - **v4 新增 5 张**:`operations`(Gate 真实操作按 `refId` 折叠,含 `event_ids` 可回连原始流水)/ `operation_annotations`(每笔操作的动机、止盈、止损、预期、复盘当前态)/ `annotation_events`(注释原始审计链)/ `metric_glossary`(指标的来源、公式、走势含义、误读)/ `daily_reports`(每篇日报的摘要、关键指标、观察项、推送结果)。
@@ -140,12 +140,14 @@ npm start
 |---|---|---|
 | 总览 | `?tab=overview` | 日常就看这页:KPI 卡(总资产、区间涨跌、TWR 收益、现金流)、资产走势图(切「最近/中段/全部」)、账户分布、币种明细(估值/占比/24h)。页面周期自动刷新,右上角「刷新」可立即强制采集一次。 |
 | 资产分析 | `?tab=analytics` | 回答「涨/跌是怎么来的」:现金流剥离后的净值曲线、逐币种价格/数量/交叉归因、回撤/波动/Sharpe 等风险指标、成本与行为统计。每个指标旁有「详解」面板:来源、公式、走势意味着什么、常见误读。区间用 8 小时 / 24 小时 / 7 天 / 30 天 / 全部 按钮切换。 |
-| 市场对比 | `?tab=market` | 选定区间,资产净值与 BTC/ETH/加权指数归一化到同一起点对比;β、上行/下行捕获率、超额收益、事件窗口复盘与中文原因分析(不臆造新闻,只做数据归因)。 |
+| 市场对比 | `?tab=market` | 区间可选 **24 小时 / 7 天 / 30 天 / 180 天 / 全部**,也可填起止日期做**自定义区间(按 UTC 0 点)**;资产净值与 BTC/ETH/LTC/DOGE/PEARL/FIL/加权指数归一化到同一起点对比;β、上行/下行捕获率、超额收益、事件窗口复盘与中文原因分析(不臆造新闻,只做数据归因)。下方「最新价格参考」按当前显示单位给出各币最新价。 |
 | 操作记录 | `?tab=operations` | Gate 真实流水自动折叠成人类可读的「买/卖/充值/提现/费用/利息」记录(**只读,不手写**,避免时间差);在任意一条下面点「注释」补写动机、止盈、止损、预期与复盘。注释独立存储、append-only,可改可删,原始审计链保留。 |
 | 日报 | `?tab=report` | 「生成 / 刷新预览」看今日日报;「立即推送」会**分两条**发到企业微信:①我的资产(1h/8h/24h/1周/1月,带明确时间点)②大行情(六币种 + 24h 技术面研判)。下方是历史日报。定时任务每天自动生成并推送(配置见 §11.3)。 |
-| 导出中心 | `?tab=export` | 全量 ZIP(34 张表 + 数据字典 + 9 个原始文件字节副本)、按表单下 CSV/JSON/JSONL、复制 CLI 命令离线导出;附哈希链完整性状态(8 条链逐条重算校验)。 |
+| 导出中心 | `?tab=export` | 全量 ZIP(35 张表 + 数据字典 + 9 个原始文件字节副本)、按表单下 CSV/JSON/JSONL、复制 CLI 命令离线导出;附哈希链完整性状态(8 条链逐条重算校验)。 |
 
-**总览页的扩展行情**:资产卡下方有一条**摘要条**,一句话讲完最重要的事(全市场涨跌家数、我的持仓 24h、相对大盘强弱);长尾数据全部收纳在默认**收起**的「更多数据 · 扩展行情明细」中——市场宽度趋势、涨跌榜、盘口价差、合约资金费率、费率表、账户状态、资金利用率、充提链。点开才加载,右上角「刷新扩展数据」可立即拉取最新一次。完整的 34 张表(含全部历史周期)去「导出中心」下载。
+**总览页的扩展行情**:资产卡下方有一条**摘要条**,一句话讲完最重要的事(全市场涨跌家数、我的持仓 24h、相对大盘强弱);长尾数据全部收纳在默认**收起**的「更多数据 · 扩展行情明细」中——市场宽度趋势、涨跌榜、盘口价差、合约资金费率、费率表、账户状态、资金利用率、充提链。点开才加载,右上角「刷新扩展数据」可立即拉取最新一次。完整的 35 张表(含全部历史周期)去「导出中心」下载。
+
+**显示单位（v5.4）**：顶栏有 `USD / CNY` 开关（记忆在本机浏览器），总资产、持仓估值、账户分布、现金流、成本、操作金额、各币最新价都会同步换算；顶部标注当前 **USD→CNY 参考汇率**、报价时间与来源。汇率取公开数据源（exchangerate-api，失败回退 currency-api），服务端缓存 6 小时（`FX_TTL_SEC`），写入 `.runtime/fx.json`，失败时沿用缓存并标注「缓存」。**这只是显示换算**：事实层、TWR/β/归因等所有指标始终以 USD 计算，导出的 `fx_rates` 表记录本次换算用的汇率与来源；Gate 无 CNY 交易对，不存在用交易所价格冒充汇率的口径混淆。
 
 **常见任务速查**:
 
@@ -348,6 +350,8 @@ sudo systemctl restart gate-asset-monitor    # Tailscale 部署
 | `MARKET_EVENT_THRESHOLD_PCT` | `3` | 单根 K 线涨跌幅超该值(%)记为事件；5m 下仍保持 3%，避免事件刷屏 |
 | `MARKET_EVENT_WINDOW_BARS` | 约 1 小时（5m=12） | 事件窗口前后各 N 根 K 线 |
 | `MARKET_INDEX_WEIGHTS` | `BTC:0.6,ETH:0.4` | 合成市场指数权重 |
+| `FX_ENABLED` | `true` | USD→CNY 参考汇率（仅供界面单位换算） |
+| `FX_TTL_SEC` | `21600` | 汇率缓存秒数；失败时沿用 `.runtime/fx.json` 并标注缓存 |
 | `ACCESS_TOKEN` | 空 | 看板访问口令(**必填**) |
 | `SESSION_TTL_SEC` | `604800` | 登录会话有效期 |
 | `COOKIE_SECURE` | `false` | 仅 HTTPS 反代下设为 `true`（纯 HTTP 下会导致无法登录） |
@@ -378,11 +382,11 @@ sudo systemctl restart gate-asset-monitor    # Tailscale 部署
 | `/api/events` · `/api/prices` | GET | 原始事件流水 / 行情序列(可带 `from`/`to`/`type`) |
 | `/api/decisions` | GET/POST | (旧版兼容)决策日志:读取 / 新增;新工作流请用 `/api/operations` |
 | `/api/decisions/review` · `/api/decisions/delete` | POST | 追加复盘 / 删除(event-sourcing,不可改写) |
-| `/api/datasets` | GET | 34 张导出表的清单(行数/列数/粒度) |
+| `/api/datasets` | GET | 35 张导出表的清单(行数/列数/粒度) |
 | `/api/schema?format=json\|csv` | GET | 数据字典(机器可读 / CSV) |
 | `/api/integrity` | GET | 八条 append-only 哈希链实时校验 |
 | `/api/export/dataset?name=&format=` | GET | 单表导出(`csv`/`json`/`jsonl`) |
-| `/api/export/all` | GET | **全量 ZIP**(34 表 + 字典 + manifest + README + 9 个 `raw/*.jsonl`) |
+| `/api/export/all` | GET | **全量 ZIP**(35 表 + 字典 + manifest + README + 9 个 `raw/*.jsonl`) |
 | `/api/operations?kinds=&annotated=1&limit=` | GET | **Gate 真实操作记录**(只读派生视图)+ 注释挂载 + 覆盖率统计 |
 | `/api/operations/annotate` | POST | 按 `operationId` upsert 动机 / 止盈 / 止损 / 预期 / 标签(append-only) |
 | `/api/operations/review` | POST | 追加复盘(保留动机与止盈止损);`/api/operations/annotate/delete` 删除注释 |
@@ -393,8 +397,9 @@ sudo systemctl restart gate-asset-monitor    # Tailscale 部署
 | `/api/report/preview` | GET | 生成日报(不推送、不写历史);`/api/report/markdown?id=` 取全文 |
 | `/api/report/send` | POST | 生成 + 推送企业微信 + 写入 `reports.jsonl` |
 | `/api/report/test` · `/api/report/history` | POST/GET | 机器人连通性测试 / 推送历史 |
-| `/api/market?preset=&symbols=&from=&to=&view=` | GET | 区间市场对比：归一化序列 / 相对指标 / 事件窗口 / 原因结论 |
+| `/api/market?preset=&symbols=&fromDate=&toDate=&from=&to=&view=` | GET | 区间市场对比：归一化序列 / 相对指标 / 事件窗口 / 原因结论。`preset` 支持 `24H/7D/30D/180D/ALL`（缺省 `24H`）；`fromDate/toDate` 为 `YYYY-MM-DD`，按 **UTC 00:00 → 次日 00:00 前 1ms** 解析，优先于 `preset`；`from/to` 仍是 Unix ms。`meta.lastPrices` 给出各基准最新已收盘价。 |
 | `/api/market/refresh` | POST | 仅 live：重新拉取公开 K 线 + 自动检测事件 |
+| `/api/fx?refresh=1` | GET | USD→CNY 参考汇率（来源 / 报价时间 / 缓存状态）；`refresh=1` 强制刷新 |
 | `/api/macro-events` | GET/POST | 事件台账读取 / 新增人工标注 |
 | `/api/macro-events/import` · `/api/macro-events/delete` | POST | 批量导入 / 删除事件（event-sourcing） |
 | `/api/export?format=csv\|json&kind=` | GET | 旧版导出端点(兼容保留) |
@@ -419,7 +424,7 @@ DATA_DIR=/opt/gate-asset-monitor/data OUT_DIR=/backup/gate NO_ZIP=1 \
   /opt/gate-asset-monitor/.runtime/node/bin/node deploy/export-all.js
 ```
 
-CLI 产出:34 张表的 `.csv` + `.jsonl`、`analytics.json`、`manifest.json`、`raw/*.jsonl`(9 个原始文件字节副本),以及(默认)一个全量 ZIP。可放进 cron 做每日留档。
+CLI 产出:35 张表的 `.csv` + `.jsonl`、`analytics.json`、`manifest.json`、`raw/*.jsonl`(9 个原始文件字节副本),以及(默认)一个全量 ZIP。可放进 cron 做每日留档。
 
 ### 9.1 磁盘占用与顶部「数据源提示」
 
@@ -430,7 +435,7 @@ CLI 产出:34 张表的 `.csv` + `.jsonl`、`analytics.json`、`manifest.json`�
   `futures/btc/accounts: Gate API 400: USER_NOT_FOUND` —— 含义是 **Gate Key 未开通 BTC 本位合约账户**(或该 Key 无合约读取权限),**不是网页故障**,也不影响现货、USDT 合约、理财、充提、成交与总资产(总额来自 `/wallet/total_balance`)。把 `GATE_SETTLES` 设为**实际已开通**的结算币(如 `usdt`)即可让该提示消失;以后开通 BTC 合约再加回来。
 - **`enrichment.jsonl`（v5）**：低频，跟随 `PRICE_SAMPLE_EVERY`（默认每小时一条），约 3–8KB/条 ≈ **0.1–0.2MB/天**，可忽略。只存**聚合结果 + 我实际持仓的 ticker 明细**，不存 2160 行原始 tickers（子端点原始响应截断后放 `payload_json` 供第三方重放）。想更省可调 `ENRICH_SAMPLE_EVERY` 或 `ENRICH_COLLECT=false`。
 - **磁盘水位保护（v5.1）**：剩余空间低于 `DISK_GUARD_MIN_FREE_MB`（默认 512MB）时自动把价格/扩展数据的采样间隔翻倍（最低 512→×2、256→×4、128→×8，上限 `DISK_GUARD_MAX_SAMPLE_EVERY`）；低于 `DISK_GUARD_HARD_FREE_MB`（默认 128MB）时**完全停止写 prices / enrichment，但快照继续**。宁可少采，也**不截断或删除哈希链**。状态见 `/api/summary` 的 `status.diskGuard`（`level` / `freeMb` / `sampleEvery` / `skipHeavy`），日志只在级别变化时打一次。`DISK_GUARD_ENABLED=false` 可关闭。
-- **传输优化（v5.1）**：前端 `index.html` / `app.js` / `style.css` 走 gzip（实测 82KB → 26KB）+ ETag 条件请求（未变更返回 `304`），安全头保持不变；文件名没有内容哈希，所以用 `no-cache` 重新校验而不是 `immutable`，避免改版后拿旧页面。`/api/export/all` 改为**流式 ZIP**（逐块写入并处理背压），内存峰值从「整包 ×2」降为「单张最大表」，ZIP 内容与离线 CLI 逐字节一致（80 条目 / 34 表 / 9 raw）。
+- **传输优化（v5.1）**：前端 `index.html` / `app.js` / `style.css` 走 gzip（实测 82KB → 26KB）+ ETag 条件请求（未变更返回 `304`），安全头保持不变；文件名没有内容哈希，所以用 `no-cache` 重新校验而不是 `immutable`，避免改版后拿旧页面。`/api/export/all` 改为**流式 ZIP**（逐块写入并处理背压），内存峰值从「整包 ×2」降为「单张最大表」，ZIP 内容与离线 CLI 逐字节一致（82 条目 / 35 表 / 9 raw）。
 - 任何 `.env` 改动后必须 `systemctl restart gate-asset-monitor` 才生效(配置只在进程启动时读取)。
 
 ---
@@ -453,12 +458,14 @@ gate-asset-monitor/
 │   ├── metricGlossary.js # 41 个指标的来源/公式/走势含义/误读(纯数据,唯一真相源)
 │   ├── dailyReport.js   # 日报生成器(资产/行情分推 + 时间窗 + 24h 技术研判 + markdown 分段)
 │   ├── wecom.js         # 企业微信机器人(零依赖 HTTPS + webhook 脱敏 + 主机白名单)
-│   ├── exporter.js      # 34 张整齐长表 + 数据字典 + manifest + ZIP bundle
+│   ├── exporter.js      # 35 张整齐长表 + 数据字典 + manifest + ZIP bundle
 │   ├── zip.js           # 零依赖 ZIP writer(STORE / CRC32 / UTF-8 文件名)
 │   ├── auth.js          # Token 登录 + HMAC 会话 + 按设备撤销
 │   ├── diskGuard.js     # 磁盘水位策略(软/硬水位 → 降采样/停写重数据,不删链)
 │   ├── httpStream.js    # 流式 ZIP 写入(背压 + 断连保护)
 │   ├── loginGuard.js    # 登录失败限流(per-IP 滑动窗口,不信任代理头)
+│   ├── marketWindow.js  # 市场对比区间解析(预设 24H/7D/30D/180D + UTC 日期,纯函数)
+│   ├── fx.js            # USD/CNY 参考汇率(双公开源 + .runtime 缓存 + stale 语义)
 │   └── server.js        # HTTP 服务 / 定时采集 / 全部 API / 分析缓存 / 日报调度 / 安全 gate
 ├── public/              # 看板六视图(零 CDN 依赖:index.html / style.css / app.js)
 ├── deploy/
@@ -470,7 +477,7 @@ gate-asset-monitor/
 │   ├── gate-monitor.service.example
 │   ├── verify-live.sh            # 真实密钥预检
 │   └── nginx.conf.example
-├── test/                # node:test 单测套件(79 条断言,零依赖)
+├── test/                # node:test 单测套件(103 条断言,零依赖)
 │   ├── netguard.test.js         # 网段白名单边界 / 代理头信任 / fail-closed
 │   ├── facts.test.js            # 哈希链串联 + 篡改/删除/重排检测
 │   ├── diskGuard.test.js        # 水位策略 / 采样夹逼 / fail-open
@@ -480,7 +487,9 @@ gate-asset-monitor/
 │   ├── marketAnalytics.test.js  # as-of 对齐无前视 / 归一化 / 相对指标
 │   ├── operations.test.js       # refId 折叠 / 注释挂载 / 筛选
 │   ├── enrichAnalytics.test.js  # 扩展表 / 相对强弱 / 费率对账 / 充提链
-│   └── exporter.test.js         # 34 表 schema / CSV 转义 / ZIP 80 条目
+│   ├── exporter.test.js         # 35 表 schema / CSV 转义 / ZIP 82 条目
+│   ├── marketWindow.test.js     # UTC 日期边界 / 预设优先级 / 未来夹断
+│   └── fx.test.js               # 双源解析 / 回退 / 缓存 stale 语义
 ├── docs/
 │   └── METRICS.md       # 指标口径真相源(公式/单位/时间基准/空值语义)
 ├── .github/workflows/ci.yml # Node 18/20/22 矩阵:语法 + 单测 + 导出冒烟
@@ -579,8 +588,8 @@ node --check src/server.js   # 单文件语法检查
 ```
 
 - **测试全部用临时 `DATA_DIR` 隔离**,不会碰 `.env`、`data/` 或生产数据;测试身份也由环境变量注入。
-- CI 在 push / PR 到 `main` 时跑 Node 18 / 20 / 22 三个版本:全量语法检查 → 79 条单测 → 离线导出 CLI 冒烟(校验 ZIP 可解压、34 张表、manifest 一致)。
-- 关键不变量被测试钉死:**现金流不能算成收益**、**归因残差必须闭合**、**as-of 不能用未来数据**、**哈希链篡改必被发现**、**导出 34 表且字典与 schema 一致**。改公式前先跑测试。
+- CI 在 push / PR 到 `main` 时跑 Node 18 / 20 / 22 三个版本:全量语法检查 → 103 条单测 → 离线导出 CLI 冒烟(校验 ZIP 可解压、35 张表、manifest 一致)。
+- 关键不变量被测试钉死:**现金流不能算成收益**、**归因残差必须闭合**、**as-of 不能用未来数据**、**哈希链篡改必被发现**、**导出 35 表且字典与 schema 一致**。改公式前先跑测试。
 - 本地开发建议 `mock` 模式 + 独立 `DATA_DIR`;没有 Gate 密钥也能跑通全部视图、日报预览和导出。
 - 版本演进见 [`CHANGELOG.md`](CHANGELOG.md);指标口径以 [`docs/METRICS.md`](docs/METRICS.md) 为准。
 

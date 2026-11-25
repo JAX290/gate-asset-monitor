@@ -209,6 +209,12 @@ const config = {
     indexWeights: parseWeights(process.env.MARKET_INDEX_WEIGHTS || 'BTC:0.6,ETH:0.4'),
   },
 
+  // USD/CNY reference rate for DISPLAY ONLY. The fact layer stays in USD.
+  fx: {
+    enabled: bool(process.env.FX_ENABLED, true),
+    ttlSec: int(process.env.FX_TTL_SEC, 21600, 300, 604800), // 6h default
+  },
+
   // ---------------------------------------------------------------------
   // Daily report + WeCom (企业微信) group-robot push.
   //

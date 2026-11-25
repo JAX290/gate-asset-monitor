@@ -293,7 +293,7 @@ BTC 的 `beta=1, idio=0`，因此 `market.jsonl` 的 BTC `close` 与持仓估值
 
 - **9 个原始文件**：`snapshots / events / prices / decisions / market / macro_events / annotations / reports / enrichment`（均为 `.jsonl`，append-only）。
 - **8 条哈希链**：`events / prices / decisions / market / macro_events / annotations / reports / enrichment`；`snapshots.jsonl` 仍作为原始字节副本随 ZIP 导出，但不参与 facts 哈希链。
-- **34 张 tidy 长表**；全量 ZIP = 34 CSV + 34 JSONL + 9 个 `raw/*.jsonl` + `analytics.json` + `manifest.json` + `README.txt` = **80 条目**。CSV 为 UTF-8 BOM + CRLF，时间戳统一 `ts_ms`(Unix 毫秒 UTC) + `ts_iso_utc`。
+- **35 张 tidy 长表**；全量 ZIP = 35 CSV + 35 JSONL + 9 个 `raw/*.jsonl` + `analytics.json` + `manifest.json` + `README.txt` = **82 条目**。CSV 为 UTF-8 BOM + CRLF，时间戳统一 `ts_ms`(Unix 毫秒 UTC) + `ts_iso_utc`。
 
 ### 11.5 v5 扩展只读端点口径（`enrichment` 及 8 张派生表）
 
@@ -326,6 +326,13 @@ BTC 的 `beta=1, idio=0`，因此 `market.jsonl` 的 BTC `close` 与持仓估值
 - **哈希链兼容**：K 线 id 从 `candle-{SYMBOL}-{ts}` 改为 `candle-{SYMBOL}-{intervalSec}-{ts}`。切换周期后，同一时间戳的旧 1h 与新 5m 可共存于 append-only 的 `market.jsonl`；分析入口按当前 `intervalSec` 过滤，**只把同频数据喂给图表**，旧数据仍随 ZIP 的 `raw/market.jsonl` 原样导出供第三方复核。
 - **事件阈值保持不变**：5m K 线仍使用 3% 阈值（5 分钟内 3% 已是显著波动，不会刷屏），事件窗口默认约 1 小时（5m=12 根）。显式配置始终优先。
 - **磁盘口径**：`market.jsonl` 只存 `MARKET_SYMBOLS` 指定的主流币，30 天 5m×2 币约 0.1–0.2MB/天；全市场 2160 对 tickers 仍走低频 `prices.jsonl` + `PRICE_SAMPLE_EVERY`，不受本次改动影响。
+
+### 11.8 区间选择、显示单位与汇率（v5.4）
+
+- **区间解析**（`src/marketWindow.js`，纯函数）：快捷预设 `24H / 7D / 30D / 180D / ALL`（缺省 `24H`），或自定义 `YYYY-MM-DD` 起止日。日期一律解释为 **UTC**：`fromDate` = 当日 `00:00:00.000Z`，`toDate` = 当日 `23:59:59.999Z`（即次日 00:00 前 1ms），不受浏览器/服务器本地时区影响。`from/to` 的 Unix ms 参数仍兼容旧客户端。任何 `to > now` 都夹到当前时刻，避免用不存在的数据做对比；`from >= to` 直接返回 400。自定义日期优先于预设。
+- **无前视**：区间只过滤**快照时间轴**；基准仍按 §10.2 的 as-of 对齐取 t 时刻最近一根已收盘 K 线，因此更长窗口不会引入未来价格。数据不足时返回空区间并说明原因，`meta.requestedFrom/requestedTo` 保留用户请求的边界。
+- **显示单位**：顶栏 `USD/CNY` 开关只影响**展示**（总资产、持仓估值、账户分布、现金流、成本、逐币种贡献、操作金额、主流币最新价）。换算恒等式：`shown = usd × rate`，`rate = null` 时降级为 USD，绝不写 0。TWR、β、超额、归因残差、哈希链与导出表的 `*_usd` 列**全部保持 USD 原值**——乘以同一个常数不会改变收益率与相对指标。
+- **汇率来源**：Gate 无 CNY 交易对（`INVALID_CURRENCY`），所以不拿交易所价格冒充汇率。主源 `open.er-api.com`，备源 `@fawazahmed0/currency-api` via jsDelivr；服务端缓存到 `.runtime/fx.json`（不入 `data/`、不被部署覆盖），TTL `FX_TTL_SEC=21600`。两源均失败时沿用缓存并标 `stale=true`，无缓存则显示「—」。页面标注来源、报价时间与抓取时间；导出新增 `fx_rates` 表记录本次换算使用的汇率与口径。
 
 ---
 
