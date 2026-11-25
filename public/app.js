@@ -1230,6 +1230,21 @@ const MK_COLORS = { NAV: '#2f6df6', BTC: '#e0952a', ETH: '#8b5cf6', SOL: '#0ea5a
 const MK_IMPACT = { bullish: '利多', bearish: '利空', neutral: '中性', unknown: '未知' };
 const MK_CAT = { macro: '宏观', policy: '政策监管', onchain: '链上资金',
   listing: '上线解锁', security: '安全', volatility: '行情异动', custom: '自定义' };
+// 所选区间内真实数据少于 1/5 时，不再把短历史伪装成完整区间。
+const MK_MIN_COVERAGE = 0.2;
+
+function mkWindowEmpty(m) {
+  const s = (m && m.meta) || {};
+  const rows = (m && m.normalized) || [];
+  if (!s.points || rows.length < 2) return true;
+  const reqFrom = Date.parse(s.requestedFrom || '');
+  const reqTo = Date.parse(s.requestedTo || '');
+  const span = reqTo - reqFrom;
+  if (!Number.isFinite(span) || span <= 0) return false;
+  const from = Number(s.fromMs), to = Number(s.toMs);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return false;
+  return (to - from) / span < MK_MIN_COVERAGE;
+}
 
 async function loadMarket() {
   try {
@@ -1248,10 +1263,33 @@ async function loadMarket() {
 function renderMarket(m) {
   const s = m.meta || {}, c = m.conclusion;
   const notice = $('#mkNotice');
+
+  if (mkWindowEmpty(m)) {
+    notice.textContent = '暂无数据';
+    notice.hidden = false;
+    $('#mkConclusion').textContent = '暂无数据';
+    $('#mkVerdict').textContent = '—';
+    $('#mkVerdict').className = 'mk-verdict';
+    $('#mkReasons').innerHTML = '<div class="mk-reason"><span class="mk-reason-text muted">暂无数据</span></div>';
+    $('#mkWindowLabel').textContent = '暂无数据';
+    renderMkPrices(m);
+    renderMkChips(m);
+    $('#mkLegend').innerHTML = '';
+    $('#mkChart').innerHTML = '<text x="320" y="130" text-anchor="middle" fill="#9aa2b1" font-size="13">暂无数据</text>';
+    $('#mkFootLeft').textContent = ''; $('#mkFootMid').textContent = ''; $('#mkFootRight').textContent = '';
+    $('#mkTip').hidden = true;
+    $('#mkMetrics').innerHTML = '<div class="dec-empty">暂无数据</div>';
+    $('#mkEventStat').textContent = '';
+    $('#mkEvents').innerHTML = '<div class="dec-empty">暂无数据</div>';
+    $('#mkEventStudy').innerHTML = '<div class="muted small">暂无数据</div>';
+    $$('#mkRangeTabs button').forEach(b => b.classList.toggle('active', b.dataset.preset === state.mkPreset));
+    return;
+  }
+
   if (s.dataNote) { notice.textContent = s.dataNote; notice.hidden = false; }
   else notice.hidden = true;
 
-  $('#mkConclusion').textContent = c ? c.text : (s.reason || '数据不足，无法生成对比结论。');
+  $('#mkConclusion').textContent = c ? c.text : (s.reason || '暂无数据');
   const v = $('#mkVerdict');
   if (c) {
     v.textContent = c.headline;
@@ -1262,14 +1300,14 @@ function renderMarket(m) {
   $('#mkReasons').innerHTML = (m.reasons || []).map(x =>
     `<div class="mk-reason"><span class="mk-reason-label">${escapeHtml(x.label)}</span>` +
     `<span class="mk-reason-text">${escapeHtml(x.text)}</span></div>`).join('')
-    || '<div class="mk-reason"><span class="mk-reason-text muted">区间内数据不足，无法生成原因分析。</span></div>';
+    || '<div class="mk-reason"><span class="mk-reason-text muted">暂无数据</span></div>';
 
   const modeTag = s.windowSource === 'utc-dates' ? '自定义 UTC 日期' :
     s.windowPreset ? `快捷区间 ${s.windowPreset}` : (s.windowSource === 'epoch' ? '指定时间戳' : '全部可用快照');
   $('#mkWindowLabel').textContent = s.from
     ? `${modeTag} · ${s.from} → ${s.to} (UTC) · ${s.points} 个快照 · 基准 ` +
       Object.entries(s.benchmarkSources || {}).map(([k, x]) => `${k}(${x})`).join(', ')
-    : `${modeTag} · 请求 ${s.requestedFrom || '—'} → ${s.requestedTo || '—'} (UTC) · 所选区间内快照不足`;
+    : '暂无数据';
 
   renderMkPrices(m);
   renderMkChips(m);
@@ -1286,7 +1324,7 @@ function renderMkPrices(m) {
   const prices = (m.meta && m.meta.lastPrices) || {};
   const rows = Object.entries(prices).filter(([, v]) => v && Number.isFinite(Number(v.priceUsd)));
   if (!rows.length) {
-    el.innerHTML = '<div class="muted small">暂无已收盘 K 线价格。</div>';
+    el.innerHTML = '<div class="muted small">暂无数据</div>';
     return;
   }
   el.innerHTML = rows.map(([sym, v]) => `
@@ -1318,7 +1356,7 @@ function renderMkLegend(m) {
 function renderMkChart(m) {
   const svg = $('#mkChart'), rows = m.normalized || [];
   if (rows.length < 2) {
-    svg.innerHTML = '<text x="320" y="130" text-anchor="middle" fill="#9aa2b1" font-size="13">所选区间数据不足</text>';
+    svg.innerHTML = '<text x="320" y="130" text-anchor="middle" fill="#9aa2b1" font-size="13">暂无数据</text>';
     $('#mkFootLeft').textContent = ''; $('#mkFootMid').textContent = ''; $('#mkFootRight').textContent = '';
     return;
   }
@@ -1405,7 +1443,7 @@ function renderMkMetrics(m) {
         ${mkKv('下行捕获', x.down_capture === null ? '—' : (x.down_capture * 100).toFixed(0) + '%', '')}
         ${mkKv('跟踪误差', x.tracking_error_pct === null ? '—' : Number(x.tracking_error_pct).toFixed(3) + '%', '')}
       </div>
-    </div>`).join('') : '<div class="dec-empty">没有可用基准数据</div>';
+    </div>`).join('') : '<div class="dec-empty">暂无数据</div>';
 }
 
 function renderMkEvents(m) {
