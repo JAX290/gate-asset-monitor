@@ -31,7 +31,7 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      - name: Offline export smoke test (34 tables + ZIP)
+      - name: Offline export smoke test (35 tables + ZIP)
         env:
           DATA_DIR: ${{ runner.temp }}/gam-ci-data
           OUT_DIR: ${{ runner.temp }}/gam-ci-export
@@ -47,9 +47,9 @@ jobs:
               names = z.namelist()
               csvs = [n for n in names if n.endswith('.csv')]
               manifests = [n for n in names if n.endswith('manifest.json')]
-              assert len(csvs) == 34, f'expected 34 CSV tables, got {len(csvs)}'
+              assert len(csvs) == 35, f'expected 35 CSV tables, got {len(csvs)}'
               assert len(manifests) == 1
               m = json.loads(z.read(manifests[0]))
-              assert len(m['datasets']) == 34
-              print(f'OK: {len(names)} ZIP entries, 34 tables, {len(m["raw_files"])} raw files')
+              assert len(m['datasets']) == 35
+              print(f'OK: {len(names)} ZIP entries, 35 tables, {len(m["raw_files"])} raw files')
           PY
