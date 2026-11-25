@@ -232,7 +232,7 @@ function renderDistribution(accounts) {
   if (!items.length) { el.innerHTML = '<div class="dist-empty">暂无账户数据</div>'; return; }
   const max = Math.max(...items.map(a => a.amount || 0), 1);
   const total = items.reduce((s, a) => s + (a.amount || 0), 0) || 1;
-  const colors = ['#2f6df6', '#7b5cf0', '#12996b', '#e0952a', '#d9536f', '#3aa9c9', '#8a7bd8'];
+  const colors = ['#4c6ef5', '#7c5cf0', '#0f9d6e', '#e0952a', '#3aa9c9', '#9b7ede', '#d94a55'];
   el.innerHTML = items.map((a, i) => {
     const pct = (a.amount / total * 100), w = (a.amount / max * 100);
     return `<div class="dist-item">
@@ -277,11 +277,11 @@ function renderChart() {
   for (let i = 1; i < pts.length; i++) path += ` L ${pts[i][0].toFixed(1)} ${pts[i][1].toFixed(1)}`;
   const area = `${path} L ${pts[pts.length - 1][0].toFixed(1)} ${H - padB} L ${pts[0][0].toFixed(1)} ${H - padB} Z`;
   const rising = vals[vals.length - 1] >= vals[0];
-  const line = rising ? '#d92b2b' : '#12996b';
-  const fill = rising ? 'rgba(217,43,43,.10)' : 'rgba(18,153,107,.10)';
+  const line = rising ? '#0f9d6e' : '#d94a55';
+  const fill = rising ? 'rgba(15,157,110,.10)' : 'rgba(217,74,85,.10)';
   const gridY = [0, .5, 1].map(f => {
     const gy = padT + f * (H - padT - padB);
-    return `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="#eef0f4" stroke-width="1"/>`;
+    return `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="#f1f3f7" stroke-width="1"/>`;
   }).join('');
   const last = pts[pts.length - 1];
   svg.innerHTML = `${gridY}
@@ -391,7 +391,7 @@ function renderNavChart(nav, cfs) {
   const pathOf = (arr, yf) => arr.map((v, i) => `${i ? 'L' : 'M'} ${x(i).toFixed(1)} ${yf(v).toFixed(1)}`).join(' ');
   const gridY = [0, .25, .5, .75, 1].map(f => {
     const gy = padT + f * (H - padT - padB);
-    return `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="#eef0f4" stroke-width="1"/>`;
+    return `<line x1="${padL}" y1="${gy}" x2="${W - padR}" y2="${gy}" stroke="#f1f3f7" stroke-width="1"/>`;
   }).join('');
   const cfLines = cfs.map(c => {
     let idx = 0, best = Infinity;
@@ -1225,7 +1225,7 @@ window.addEventListener('resize', () => {
 
 
 /* ======================= MARKET / BENCHMARK VIEW ======================= */
-const MK_COLORS = { NAV: '#2f6df6', BTC: '#e0952a', ETH: '#8b5cf6', SOL: '#0ea5a4',
+const MK_COLORS = { NAV: '#4c6ef5', BTC: '#e0952a', ETH: '#8b5cf6', SOL: '#0ea5a4',
   DOGE: '#c026d3', BNB: '#d9a406', INDEX: '#9aa2b1' };
 const MK_IMPACT = { bullish: '利多', bearish: '利空', neutral: '中性', unknown: '未知' };
 const MK_CAT = { macro: '宏观', policy: '政策监管', onchain: '链上资金',
@@ -1377,7 +1377,7 @@ function renderMkChart(m) {
 
   for (let i = 0; i <= 4; i++) {
     const val = lo + (hi - lo) * i / 4, yy = y(val);
-    out.push(`<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W - padR}" y2="${yy.toFixed(1)}" stroke="#eef0f4" stroke-width="1"/>`);
+    out.push(`<line x1="${padL}" y1="${yy.toFixed(1)}" x2="${W - padR}" y2="${yy.toFixed(1)}" stroke="#f1f3f7" stroke-width="1"/>`);
     out.push(`<text x="${padL - 6}" y="${(yy + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#9aa2b1">${val.toFixed(1)}</text>`);
   }
   if (100 >= lo && 100 <= hi) {

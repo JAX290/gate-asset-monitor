@@ -81,7 +81,7 @@ const ITEMS = [
     source: '逐区间收益率 r_i（来自净值序列）的样本标准差 × √年化期数',
     formula: 'stdev(r_i) × √ppy，ppy = YEAR / 中位采样间隔',
     meaning: '收益的「颠簸程度」。越高=上上下下越剧烈，同样收益要承受更大的心理与强平压力。用来横向比较不同策略/币种的稳定性。',
-    caveat: '窗口 < 7 天会被极度放大，仅供演示。中国习惯红涨绿跌，但波动率无方向。',
+    caveat: '窗口 < 7 天会被极度放大，仅供演示。看板按绿涨红跌显示，但波动率无方向。',
   },
   {
     group: 'risk', name: '夏普比率 Sharpe', field: 'risk.sharpe / summary.sharpe',
