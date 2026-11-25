@@ -117,7 +117,10 @@ async function sendMarkdown(config, opts = {}) {
   const mobiles = (opts.mentionMobiles && opts.mentionMobiles.length)
     ? opts.mentionMobiles
     : (config.wecom && config.wecom.mentionMobiles || []);
-  const mentionAll = !!(opts.mentionAll || (config.wecom && config.wecom.mentionAll));
+  // With split reports only the LAST push mentions, otherwise a user with @all
+  // gets pinged twice for what is logically one daily briefing.
+  const mentionAll = !opts.skipMention && !!(opts.mentionAll || (config.wecom && config.wecom.mentionAll));
+  const mentionMobiles = opts.skipMention ? [] : mobiles;
 
   const results = [];
   for (let i = 0; i < chunks.length; i++) {
@@ -128,12 +131,12 @@ async function sendMarkdown(config, opts = {}) {
     results.push(res);
     if (i < chunks.length - 1) await sleep(350);       // stay well under 20 msg/min
   }
-  if (mobiles.length || mentionAll) {
+  if (mentionMobiles.length || mentionAll) {
     const at = {
       msgtype: 'text',
       text: {
-        content: '每日资产日报已送达，以上观察为数据驱动提示，非投资建议。',
-        mentioned_mobile_list: mentionAll ? ['@all'] : mobiles,
+        content: opts.mentionText || '每日资产与行情日报已送达，以上观察为数据驱动提示，非投资建议。',
+        mentioned_mobile_list: mentionAll ? ['@all'] : mentionMobiles,
       },
     };
     results.push(await postOnce(webhook, at, config.wecom && config.wecom.timeoutMs));
@@ -146,6 +149,40 @@ async function sendMarkdown(config, opts = {}) {
   };
 }
 
+/**
+ * Send the two independently built reports (asset / market) as two WeCom
+ * pushes. The first push suppresses @mentions so @all fires only once.
+ * Falls back to the combined markdown for older/partial report objects.
+ */
+async function sendSplit(config, rep, opts = {}) {
+  const parts = [];
+  if (rep && rep.assetReport) {
+    parts.push(['资产', await sendMarkdown(config, {
+      chunks: rep.assetReport.markdownChunks,
+      skipMention: !!rep.marketReport,
+    })]);
+  }
+  if (rep && rep.marketReport) {
+    parts.push(['行情', await sendMarkdown(config, {
+      chunks: rep.marketReport.markdownChunks,
+      mentionText: opts.mentionText || '资产与行情日报已送达；行情研判为技术面观察，非投资建议。',
+    })]);
+  }
+  if (!parts.length) {
+    parts.push(['日报', await sendMarkdown(config, { chunks: (rep && rep.markdownChunks) || [] })]);
+  }
+  const results = parts.flatMap(([, p]) => p.results || []);
+  const sent = results.filter(r => r.ok).length;
+  return {
+    ok: results.length > 0 && results.every(r => r.ok),
+    sent, failed: results.length - sent,
+    results,
+    maskedWebhook: parts[0][1].maskedWebhook || '',
+    message: parts.map(([label, p]) => `${label} ${p.sent}/${p.sent + p.failed}`).join(' · '),
+    parts: parts.map(([label, p]) => ({ label, ok: p.ok, sent: p.sent, failed: p.failed, message: p.message })),
+  };
+}
+
 /** Lightweight connectivity test — one short markdown message. */
 async function sendTest(config) {
   if (!configured(config)) return { ok: false, sent: 0, failed: 0, results: [], maskedWebhook: '', message: '未配置企业微信机器人 webhook' };
@@ -154,4 +191,4 @@ async function sendTest(config) {
   return sendMarkdown(config, { chunks: [md] });
 }
 
-module.exports = { configured, status, maskUrl, buildWebhook, sendMarkdown, sendTest, ALLOWED_HOSTS };
+module.exports = { configured, status, maskUrl, buildWebhook, sendMarkdown, sendSplit, sendTest, ALLOWED_HOSTS };

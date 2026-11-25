@@ -280,11 +280,14 @@ BTC 的 `beta=1, idio=0`，因此 `market.jsonl` 的 BTC `close` 与持仓估值
 ### 11.3 日报口径（`daily_reports` / `reports.jsonl`）
 
 - 窗口：`REPORT_PRESET` = `8H / 24H / 7D / 30D / ALL`；资产侧用 **TWR**（§3），市场侧用 **as-of 对齐**（§10.2），年化可靠性沿用 `risk.annualizationReliable`（统计窗口 ≥ 7 天）。
-- `marketBrief`：按 symbol 取最近一根**已收盘** K 线的 `close`；`chg24Pct = close / 24h 前最近一根 close − 1`；`chgWindowPct = close / 首根 close − 1`；`high24 / low24` 来自最近 24 根。
+- **v5.3 分推**：一次生成 `assetReport` + `marketReport` 两个独立对象，企业微信分两条发送；合并对象仅用于预览 / `reports.jsonl` / 导出。@ 人只在第二条（`marketReport`）出现一次。
+- **资产时间点对比**：窗口固定为 `1h / 8h / 24h / 7d / 30d`。从 `now` 向前找**最后一个 `ts ≤ now − 窗口`** 的快照作起点，终点是最新快照；两点时间都按 `REPORT_TZ_OFFSET_HOURS` 打印。`changePct = (V_end − V_start) / V_start × 100`，**总资产口径含出入金**；没有起点快照时输出「窗口前无快照」而不是估算。不再出现「较上一轮快照」。
+- `marketBrief`：按 symbol 取最近一根**已收盘** K 线；`chg24Pct = close / 24h 前最近一根 close − 1`；`chg7Pct` 同理用 7d；`high24 / low24 / high7 / low7` 取对应时间窗内 K 线的 `high / low`（**不再用「最近 24 根」冒充 24h**，5m 周期下 24h = 288 根）。只消费与 `MARKET_CANDLE_INTERVAL` 同 `intervalSec` 的点，绝不混用旧 1h K 线。
+- **24h 技术面研判（非预测）**：`barsPerDay = 86400 / intervalSec`；快线 `SMA(barsPerDay/4)`、慢线 `SMA(barsPerDay)`、`RSI(14)`、24h 已实现波动率 `stdev(bar returns) × √barsPerDay`、量比 `ΣquoteVolume(近24h) / ΣquoteVolume(前24h)`。逐项打分（价格在快线上/下、快慢线关系、RSI 区间、24h 涨跌、量比≥1.2 放大且顺势），映射为 `偏强 / 中性偏强 / 震荡 / 中性偏弱 / 偏弱`。技术区间 = `last × (1 ± 波动率)`，并取 24h 高低作参考支撑/阻力。**不含新闻、链上资金或预测模型，突发消息可使区间失效**。
 - `observations`：仅在真实数值触发阈值时生成，每项带 `basis`（依据数值）与 `level`（`warn / info / good` **仅视觉强调，不是交易信号**）。**短窗口不引用年化成本率**（2 小时窗口年化可虚高到 95%），改用 `costToAvgAssetsPct`，避免误导。
-- 推送：企业微信 `markdown` 单条 ≤ **4096 字节 UTF-8**，按行切分至 `CHUNK_TARGET=3600` 并加 `(i/n)` 前缀；条间 350ms，远低于 20 条/分钟；@ 人用独立短 `text` 消息（`mentioned_mobile_list`）；只允许主机 `qyapi.weixin.qq.com`。
-- `reports.jsonl`：一报一行，存 `meta / headline / keyMetrics / observations 摘要 / sections 目录 / 完整 markdown / chunks / 推送结果`；**`pushedTo` 只存脱敏 webhook**（`?key=***abcd`），密钥绝不落盘。
-- 日报里的「资产处置建议」= **数据驱动的观察与复核提示**，不构成投资建议、不含买卖指令、不臆造新闻；事件来源为行情异动自动检测 / 人工标注 / DEMO，不是实时新闻源。
+- 推送：企业微信 `markdown` 单条 ≤ **4096 字节 UTF-8**，按行切分至 `CHUNK_TARGET=3600` 并加 `(i/n)` 前缀；条间 350ms，远低于 20 条/分钟；@ 人用独立短 `text` 消息（`mentioned_mobile_list`），分推时只在行情条出现；只允许主机 `qyapi.weixin.qq.com`。
+- `reports.jsonl`：一报一行，存 `meta / headline / keyMetrics / observations 摘要 / sections 目录 / 完整 markdown / chunks / 推送结果（含分推 parts）`；**`pushedTo` 只存脱敏 webhook**（`?key=***abcd`），密钥绝不落盘。
+- 日报里的「资产处置建议」与「24h 研判」= **数据驱动的观察与规则化技术面提示**，不构成投资建议、不含买卖指令、不臆造新闻、不是价格预测；事件来源为行情异动自动检测 / 人工标注 / DEMO，不是实时新闻源。
 
 ### 11.4 事实层与导出清单（v5 汇总）
 

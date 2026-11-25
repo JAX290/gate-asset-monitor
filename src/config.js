@@ -181,7 +181,10 @@ const config = {
   // an external API key. `source=auto` is the adapter point for adding one.
   // ---------------------------------------------------------------------
   market: {
-    symbols: (process.env.MARKET_SYMBOLS || 'BTC,ETH').split(',').map(s => s.trim().toUpperCase()).filter(Boolean),
+    // Default basket follows the daily "大行情" briefing: BTC/ETH plus the
+    // four high-beta majors the user tracks. Override with MARKET_SYMBOLS.
+    symbols: (process.env.MARKET_SYMBOLS || 'BTC,ETH,LTC,DOGE,PEARL,FIL')
+      .split(',').map(s => s.trim().toUpperCase()).filter(Boolean),
     quote: (process.env.MARKET_QUOTE || 'USDT').toUpperCase(),
     // Default = same cadence as asset snapshots (5m @ 5m snapshots). A
     // manually requested coarser interval is clamped down by marketCadence.

@@ -82,7 +82,10 @@ async function main() {
     deltaUsd: latest && prev ? Math.round((latest.totalUsd - prev.totalUsd) * 100) / 100 : null,
     deltaPct: latest && prev && prev.totalUsd ? Math.round((latest.totalUsd - prev.totalUsd) / prev.totalUsd * 10000) / 100 : null,
   };
-  const rep = dailyReport.build({ analysis, market: analysis.market, marketPts: input.market, summary, config, now });
+  const rep = dailyReport.build({
+    analysis, market: analysis.market, marketPts: input.market,
+    snapshots: input.snapshots, summary, config, now,
+  });
 
   if (has('--preview') || (!has('--send') && !has('--test'))) {
     console.log(rep.plain);
@@ -93,7 +96,7 @@ async function main() {
   }
 
   if (has('--send')) {
-    const push = await wecom.sendMarkdown(config, { chunks: rep.markdownChunks });
+    const push = await wecom.sendSplit(config, rep);
     if (config.report.keepHistory) {
       facts.addReport(rep, {
         trigger: 'cli', pushed: true, pushOk: push.ok,

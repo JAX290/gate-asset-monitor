@@ -408,7 +408,7 @@ function generateDailyReport(nowMs) {
     indexWeights: config.market.indexWeights,
   });
   return dailyReport.build({
-    analysis, market: mk, marketPts: input.market,
+    analysis, market: mk, marketPts: input.market, snapshots: input.snapshots,
     summary: summaryPayload(), config, now,
   });
 }
@@ -427,7 +427,8 @@ async function runDailyReport({ trigger = 'manual', send = false, keep = true, r
   const rep = generateDailyReport(Date.now());
   let push = null;
   if (send) {
-    push = await wecom.sendMarkdown(config, { chunks: rep.markdownChunks });
+    // v5.3: asset and market are two separate WeCom pushes; @all fires once.
+    push = await wecom.sendSplit(config, rep);
     state.lastReportAt = Date.now();
     state.lastReportOk = !!push.ok;
     state.lastReportMessage = push.message;
@@ -945,8 +946,12 @@ async function handleApi(req, res, url) {
       refresh: body.refresh !== false,
     });
     return json(res, 200, {
-      ok: true, report: { meta: rep.meta, headline: rep.headline, chunks: rep.markdownChunks.length },
-      push: push ? { ok: push.ok, sent: push.sent, failed: push.failed, message: push.message, maskedWebhook: push.maskedWebhook } : null,
+      ok: true, report: {
+        meta: rep.meta, headline: rep.headline, chunks: rep.markdownChunks.length,
+        assetChunks: rep.assetReport ? rep.assetReport.markdownChunks.length : 0,
+        marketChunks: rep.marketReport ? rep.marketReport.markdownChunks.length : 0,
+      },
+      push: push ? { ok: push.ok, sent: push.sent, failed: push.failed, message: push.message, maskedWebhook: push.maskedWebhook, parts: push.parts } : null,
     });
   }
   if (p === '/api/report/test' && method === 'POST') {
@@ -1072,7 +1077,7 @@ function banner() {
     `  enrichment  : ${config.enrich.collect ? 'ON' : 'OFF'} every ${enrichEvery()} collector cycles | detail<=${config.enrich.maxDetail} | books<=${config.enrich.maxBookPairs} | contracts ${config.enrich.futuresContracts.join('/')} | /api/enrichment`,
     `  market API  : /api/market | /api/macro-events`,
     `  operations  : /api/operations (Gate read-only mirror) | /api/operations/annotate | /api/metric-glossary`,
-    `  daily report: ${config.report.enabled ? 'ON' : 'OFF'} @${String(config.report.hour).padStart(2, '0')}:${String(config.report.minute).padStart(2, '0')} UTC${config.report.tzOffsetHours >= 0 ? '+' : ''}${config.report.tzOffsetHours} | preset ${config.report.preset} | wecom ${wecom.configured(config) ? 'configured (' + wecom.status(config).maskedWebhook + ')' : 'NOT configured'}`,
+    `  daily report: ${config.report.enabled ? 'ON' : 'OFF'} @${String(config.report.hour).padStart(2, '0')}:${String(config.report.minute).padStart(2, '0')} UTC${config.report.tzOffsetHours >= 0 ? '+' : ''}${config.report.tzOffsetHours} | preset ${config.report.preset} | SPLIT asset+market | wecom ${wecom.configured(config) ? 'configured (' + wecom.status(config).maskedWebhook + ')' : 'NOT configured'}`,
     `  report API  : /api/report/preview | /send | /test | /history | /status`,
     `  auth        : ${config.auth.enabled ? 'ENABLED' : 'DISABLED'}`,
     `  gate keys   : ${config.gate.key && config.gate.secret ? 'configured' : 'NOT configured (required for live)'}`,
